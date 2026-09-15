@@ -36,16 +36,38 @@ final class Signer
         private readonly string $secret,
         private readonly ?Closure $clock = null,
     ) {
-        if ($project === '') {
+        // Deliberately NO validation here. See assertUsable().
+    }
+
+    /**
+     * Fail closed at USE time, not at construction time.
+     *
+     * These guards lived in the constructor, which looked stricter and was
+     * actively worse: this class is bound as a singleton by the service
+     * provider and injected into SyncUsersCommand. `#[AsCommand]` defers
+     * *targeted* invocation but NOT *enumeration* — anything that calls
+     * Application::all() constructs every command, so on a checkout without
+     * WOLLERP_HMAC_SECRET_AUTH set, `php artisan list`, `artisan tinker` and
+     * `artisan` with no arguments all died at boot. A consumer could not even
+     * run the tinker check that INTEGRATION.md §3 prescribes.
+     *
+     * Moving the guard here keeps the security property exactly — nothing can
+     * sign with an empty secret or an empty project — while letting the object
+     * exist unconfigured. Signing is the operation that must refuse; existing
+     * is not.
+     */
+    private function assertUsable(): void
+    {
+        if ($this->project === '') {
             throw new InvalidArgumentException(
-                'Refusing to construct a Signer without a project slug; set WOLLERP_SERVICE_SLUG '
+                'Refusing to sign without a project slug; set WOLLERP_SERVICE_SLUG '
                 .'(CONTRACT §7 — the registry is open, so this package ships no default).'
             );
         }
 
-        if ($secret === '') {
+        if ($this->secret === '') {
             throw new InvalidArgumentException(
-                'Refusing to construct a Signer with an empty secret; set WOLLERP_HMAC_SECRET_AUTH.'
+                'Refusing to sign with an empty secret; set WOLLERP_HMAC_SECRET_AUTH.'
             );
         }
     }
@@ -69,6 +91,8 @@ final class Signer
      */
     public function sign(string $rawBody, int $timestamp): string
     {
+        $this->assertUsable();
+
         return 'sha256='.hash_hmac('sha256', $timestamp.'.'.$rawBody, $this->secret);
     }
 

@@ -6,8 +6,10 @@ namespace Wollerp\AuthClient\Tests;
 
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Database\Migrations\Migration;
+use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use Orchestra\Testbench\TestCase as Orchestra;
 use Wollerp\AuthClient\Guard\TokenGuard;
 use Wollerp\AuthClient\Mirror\MirrorSynchroniser;
@@ -20,6 +22,14 @@ abstract class TestCase extends Orchestra
 {
     public TokenFactory $tokens;
 
+    /**
+     * What the fake JWKS endpoint is currently serving, or null while it is
+     * "down". Resolved at request time — see installJwksFake().
+     *
+     * @var list<array<string, string>>|null
+     */
+    private ?array $publishedKeys = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -27,6 +37,7 @@ abstract class TestCase extends Orchestra
         $this->tokens = TokenFactory::shared();
 
         $this->migratePackageTables();
+        $this->installJwksFake();
         $this->publishJwks($this->tokens->jwk());
     }
 
@@ -84,24 +95,58 @@ abstract class TestCase extends Orchestra
     }
 
     /**
-     * Stand up a fake JWKS endpoint holding exactly the keys given.
+     * Registers exactly ONE stub, scoped to the JWKS URL, which resolves what
+     * it serves at request time rather than at registration time.
+     *
+     * Both of those properties are load-bearing, because of how the HTTP fake
+     * actually behaves. Illuminate\Http\Client\Factory::fake() MERGES stubs
+     * (`$this->stubCallbacks->merge(...)`) and the handler takes the first one
+     * that returns non-null (`->filter()->first()`). A stub therefore cannot be
+     * replaced — only shadowed by one registered earlier.
+     *
+     * Registering `'*'` here, as this harness previously did, consequently made
+     * a later Http::fake() in ANY test a silent no-op: breakJwksEndpoint() never
+     * broke anything, a re-publish never rotated anything, and the users:sync
+     * fixtures were served the JWKS document instead of their own page. Ten
+     * tests failed and none of them were failing for the reason they claimed.
+     *
+     * So: match the JWKS URL and nothing else, and return null otherwise so a
+     * test's own stubs still get their turn.
+     */
+    protected function installJwksFake(): void
+    {
+        Http::preventStrayRequests();
+
+        // No return type declaration: Http::response() hands back a Guzzle
+        // PromiseInterface, and "no stub matched" is expressed as null.
+        Http::fake(function (ClientRequest $request) {
+            if (! Str::is(TokenFactory::JWKS_URL.'*', $request->url())) {
+                return null;
+            }
+
+            if ($this->publishedKeys === null) {
+                return Http::response('gateway timeout', 504);
+            }
+
+            return Http::response(['keys' => $this->publishedKeys], 200, [
+                'Cache-Control' => 'public, max-age=21600',
+            ]);
+        });
+    }
+
+    /**
+     * Serve exactly the keys given, from now on.
      *
      * @param  array<string, string>  ...$keys
      */
     public function publishJwks(array ...$keys): void
     {
-        Http::preventStrayRequests();
-
-        Http::fake([
-            '*' => Http::response(['keys' => array_values($keys)], 200, [
-                'Cache-Control' => 'public, max-age=21600',
-            ]),
-        ]);
+        $this->publishedKeys = array_values($keys);
     }
 
     public function breakJwksEndpoint(): void
     {
-        Http::fake(['*' => Http::response('gateway timeout', 504)]);
+        $this->publishedKeys = null;
     }
 
     public function validator(): TokenValidator

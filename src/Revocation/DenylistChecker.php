@@ -123,7 +123,7 @@ final class DenylistChecker
         $this->connection->table($this->table)->insert($values + [
             'sid' => $sid,
             'jti' => $jti,
-            'created_at' => date('Y-m-d H:i:s'),
+            'created_at' => gmdate('Y-m-d H:i:s'),
         ]);
     }
 
@@ -143,13 +143,13 @@ final class DenylistChecker
         }
 
         if (is_int($value)) {
-            return date('Y-m-d H:i:s', $value);
+            return gmdate('Y-m-d H:i:s', $value);
         }
 
         // A bare digit string is a unix timestamp; anything else is a date.
         $parsed = ctype_digit($value) ? (int) $value : strtotime($value);
 
-        return $parsed === false ? null : date('Y-m-d H:i:s', $parsed);
+        return $parsed === false ? null : gmdate('Y-m-d H:i:s', $parsed);
     }
 
     private static function normaliseReason(?string $reason): ?string
@@ -168,7 +168,7 @@ final class DenylistChecker
     {
         return $this->connection->table($this->table)
             ->whereNotNull('expires_at')
-            ->where('expires_at', '<', date('Y-m-d H:i:s', $before ?? time()))
+            ->where('expires_at', '<', gmdate('Y-m-d H:i:s', $before ?? time()))
             ->delete();
     }
 }

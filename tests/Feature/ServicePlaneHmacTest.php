@@ -126,8 +126,36 @@ it('rejects malformed and missing headers', function (?string $timestamp, ?strin
     'no signature' => [null, null, 'signature_timestamp_invalid'],
 ]);
 
-it('refuses to construct a signer with an empty secret', function (): void {
-    expect(fn () => new Signer('cc', ''))->toThrow(InvalidArgumentException::class);
+/*
+ * The guard moved from the constructor to the signing path, and this test moved
+ * with it. The security property is unchanged and is now asserted more
+ * thoroughly than before: nothing can produce a signature without a secret, and
+ * nothing can produce one without a project slug.
+ *
+ * What changed is only WHEN it refuses. The constructor throw was not stricter,
+ * it was broken. This class is bound as a singleton and injected into
+ * SyncUsersCommand; `#[AsCommand]` defers targeted invocation but NOT
+ * enumeration, so anything reaching Application::all() constructs it. On a
+ * consumer not yet issued WOLLERP_HMAC_SECRET_AUTH that meant `php artisan
+ * list` and `php artisan tinker` died at boot — including the tinker check
+ * INTEGRATION.md §3 tells integrators to run to verify the install.
+ *
+ * Constructing an unconfigured Signer is therefore allowed. Signing with one
+ * is not.
+ */
+it('constructs with an empty secret but refuses to sign with one', function (): void {
+    $signer = new Signer('cc', '');
+
+    expect($signer)->toBeInstanceOf(Signer::class)
+        ->and(fn () => $signer->sign('{}', 1757808000))->toThrow(InvalidArgumentException::class)
+        ->and(fn () => $signer->headers('{}'))->toThrow(InvalidArgumentException::class);
+});
+
+it('refuses to sign without a project slug', function (): void {
+    $signer = new Signer('', 'a-real-secret');
+
+    expect(fn () => $signer->sign('{}', 1757808000))->toThrow(InvalidArgumentException::class)
+        ->and(fn () => $signer->headers('{}'))->toThrow(InvalidArgumentException::class);
 });
 
 it('passes a correctly signed request through the middleware', function (): void {

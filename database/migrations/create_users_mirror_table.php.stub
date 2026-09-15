@@ -44,6 +44,19 @@ return new class extends Migration
         return Schema::connection($this->connection());
     }
 
+    /**
+     * Laravel resolves the migrations LEDGER from this, not from the
+     * Schema::connection() used below. Without the override the tables are
+     * created on the configured connection while the `migrations` row is
+     * written to the DEFAULT one — so on a multi-database consumer (Coms
+     * Coupler runs auth_db + product_db, each with its own ledger) the
+     * migration reports as never-run and will be attempted again.
+     */
+    public function getConnection(): ?string
+    {
+        return $this->connection();
+    }
+
     private function connection(): ?string
     {
         $connection = config('wollerp-auth.database.connection');
