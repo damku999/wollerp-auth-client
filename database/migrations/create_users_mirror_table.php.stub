@@ -1,0 +1,58 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+/**
+ * CONTRACT §4 — read-only projection of the auth server's user record.
+ *
+ * There is NO password column and there never will be one. The product database
+ * must not be capable of authenticating anyone.
+ *
+ * No foreign keys: the referenced table lives in a different database on a
+ * different host. Referential integrity is the synchroniser's job.
+ */
+return new class extends Migration
+{
+    public function up(): void
+    {
+        $this->schema()->create($this->table(), function (Blueprint $table): void {
+            $table->unsignedInteger('auth_user_id')->primary();   // token `uid`
+            $table->char('auth_user_uuid', 26)->unique();         // token `sub`
+            $table->string('name')->nullable();
+            $table->string('email')->nullable();
+            $table->string('status', 32)->nullable();
+            $table->timestamp('email_verified_at')->nullable();
+            $table->unsignedInteger('version')->default(0);       // token `ver`
+            $table->timestamp('synced_at')->nullable();
+
+            $table->index('email');
+            $table->index('version');
+        });
+    }
+
+    public function down(): void
+    {
+        $this->schema()->dropIfExists($this->table());
+    }
+
+    private function schema(): \Illuminate\Database\Schema\Builder
+    {
+        return Schema::connection($this->connection());
+    }
+
+    private function connection(): ?string
+    {
+        $connection = config('wollerp-auth.database.connection');
+
+        return is_string($connection) && $connection !== '' ? $connection : null;
+    }
+
+    private function table(): string
+    {
+        return (string) config('wollerp-auth.database.mirror_table', 'users_mirror');
+    }
+};

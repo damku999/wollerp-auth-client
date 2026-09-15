@@ -1,0 +1,70 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+/**
+ * CONTRACT §6 — local denylist, read once per authenticated request by
+ * DenylistChecker (CONTRACT §2 layer 2).
+ *
+ * `sid` revokes a whole refresh-token family; `jti` revokes one access token.
+ * Both are nullable because a revocation event names one or the other.
+ *
+ * `reason` is deliberately NOT part of the check predicate — DenylistChecker
+ * never reads it. It exists because the first question incident response asks
+ * is "was this session killed by logout, by reuse detection, or by an admin?",
+ * and without the column the table cannot answer. The auth server sends it on
+ * every webhook (App\Jobs\DispatchRevocationWebhook posts
+ * `{ sid, jti, not_after, reason }`), so omitting the column here would mean
+ * silently discarding data we are already being handed.
+ *
+ * Prune rows past `expires_at`: after that moment no live token can match them,
+ * and an unbounded denylist eventually costs more than the check is worth.
+ */
+return new class extends Migration
+{
+    public function up(): void
+    {
+        $this->schema()->create($this->table(), function (Blueprint $table): void {
+            $table->bigIncrements('id');
+            $table->char('sid', 26)->nullable();
+            $table->char('jti', 26)->nullable();
+            // logout · reuse_detected · password_changed · admin_revoked
+            // · account_suspended — free text, not an enum: the auth server owns
+            // the vocabulary and must be able to add to it without a migration
+            // in four product repositories.
+            $table->string('reason', 32)->nullable();
+            $table->timestamp('expires_at')->nullable();
+            $table->timestamp('created_at')->nullable();
+
+            $table->index('sid');
+            $table->index('jti');
+            $table->index('expires_at');
+        });
+    }
+
+    public function down(): void
+    {
+        $this->schema()->dropIfExists($this->table());
+    }
+
+    private function schema(): \Illuminate\Database\Schema\Builder
+    {
+        return Schema::connection($this->connection());
+    }
+
+    private function connection(): ?string
+    {
+        $connection = config('wollerp-auth.database.connection');
+
+        return is_string($connection) && $connection !== '' ? $connection : null;
+    }
+
+    private function table(): string
+    {
+        return (string) config('wollerp-auth.database.revoked_table', 'revoked_tokens');
+    }
+};
