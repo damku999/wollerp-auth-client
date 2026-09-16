@@ -71,33 +71,49 @@ final class DenylistChecker
      * Used by the auth → product `POST /api/v1/internal/revoke` handler
      * (CONTRACT §5) once that route has passed HMAC verification.
      *
+     * ── Every parameter is `mixed` on purpose ───────────────────────────────
+     * The documented handler forwards `$request->input(...)` straight in, and
+     * `input()` returns whatever was in the JSON body — which is attacker- or,
+     * more realistically, bug-shaped. Under the platform's mandatory
+     * `declare(strict_types=1)`, a narrower signature turns `{"sid": 12345}`
+     * into a TypeError, i.e. a **500 on a service-plane call** where a 422
+     * naming the field is the correct answer. Normalising here is what lets the
+     * handler stay four lines and still be correct; see README for the handler
+     * that returns 422 on a false return.
+     *
+     * Nothing is widened in what actually gets stored: a non-scalar becomes
+     * null, and if that leaves neither a `sid` nor a `jti` the call writes
+     * nothing and reports false.
+     *
      * ── `$notAfter` accepts what the auth server actually sends ─────────────
      * App\Jobs\DispatchRevocationWebhook posts `not_after` as an ISO-8601
      * STRING ("2026-09-15T12:20:00+00:00"), not a unix integer. A handler that
-     * forwards `$request->input('not_after')` straight in — which is the
-     * documented handler — would either raise a TypeError under
-     * `declare(strict_types=1)`, or, without it, coerce "2026-09-15T…" to the
-     * int 2026 and stamp `expires_at` in January 1970. The second failure is
-     * the dangerous one: the row is still written, so the revocation appears to
-     * work, and then the next prune() deletes it and the session is live again.
-     * So this normalises rather than narrows.
+     * forwards it straight in would either raise that same TypeError, or,
+     * without strict types, coerce "2026-09-15T…" to the int 2026 and stamp
+     * `expires_at` in January 1970. The second failure is the dangerous one:
+     * the row is still written, so the revocation appears to work, and then the
+     * next prune() deletes it and the session is live again.
      *
      * ── Idempotent, because delivery is retried ─────────────────────────────
      * The webhook has six attempts and a backoff schedule; a receiver that
      * plain-inserts accumulates a duplicate row per retry. Re-revoking the same
      * (sid, jti) pair updates the existing row instead.
+     *
+     * @return bool true when a denylist row now exists for this (sid, jti).
+     *              false means the payload named neither, so there was nothing
+     *              to revoke — the caller should answer 422, not 204.
      */
     public function revoke(
-        ?string $sid,
-        ?string $jti,
-        int|string|\DateTimeInterface|null $notAfter = null,
-        ?string $reason = null,
-    ): void {
-        $sid = ($sid === null || $sid === '') ? null : $sid;
-        $jti = ($jti === null || $jti === '') ? null : $jti;
+        mixed $sid,
+        mixed $jti,
+        mixed $notAfter = null,
+        mixed $reason = null,
+    ): bool {
+        $sid = self::normaliseIdentifier($sid);
+        $jti = self::normaliseIdentifier($jti);
 
         if ($sid === null && $jti === null) {
-            return;
+            return false;
         }
 
         $values = [
@@ -117,7 +133,7 @@ final class DenylistChecker
         if ((clone $existing)->exists()) {
             $existing->update($values);
 
-            return;
+            return true;
         }
 
         $this->connection->table($this->table)->insert($values + [
@@ -125,19 +141,48 @@ final class DenylistChecker
             'jti' => $jti,
             'created_at' => gmdate('Y-m-d H:i:s'),
         ]);
+
+        return true;
+    }
+
+    /**
+     * A `sid` or `jti` off the wire, as a non-empty string or null.
+     *
+     * Ints are accepted and stringified rather than rejected: the claims are
+     * ULIDs, but a sender that serialises one as a number is sending something
+     * we can still match on, and dropping it silently would be a lost
+     * revocation. Everything non-scalar — arrays, objects, booleans — becomes
+     * null, because there is no defensible string for it and guessing one risks
+     * writing a denylist row that matches nothing.
+     */
+    private static function normaliseIdentifier(mixed $value): ?string
+    {
+        if (is_string($value)) {
+            return $value === '' ? null : $value;
+        }
+
+        if (is_int($value)) {
+            return (string) $value;
+        }
+
+        if ($value instanceof \Stringable) {
+            $value = (string) $value;
+
+            return $value === '' ? null : $value;
+        }
+
+        return null;
     }
 
     /**
      * Unix int, ISO-8601 string, or DateTimeInterface — all to `Y-m-d H:i:s`.
      * An unparsable value becomes null, which means "never prune this row":
-     * keeping a revocation forever is the safe direction to fail.
+     * keeping a revocation forever is the safe direction to fail. That is also
+     * why a non-scalar lands here rather than throwing — a rejected `not_after`
+     * costs storage, a rejected revocation costs a live session.
      */
-    private static function normaliseTimestamp(int|string|\DateTimeInterface|null $value): ?string
+    private static function normaliseTimestamp(mixed $value): ?string
     {
-        if ($value === null || $value === '') {
-            return null;
-        }
-
         if ($value instanceof \DateTimeInterface) {
             return $value->format('Y-m-d H:i:s');
         }
@@ -146,15 +191,23 @@ final class DenylistChecker
             return gmdate('Y-m-d H:i:s', $value);
         }
 
+        if (! is_string($value) || $value === '') {
+            return null;
+        }
+
         // A bare digit string is a unix timestamp; anything else is a date.
         $parsed = ctype_digit($value) ? (int) $value : strtotime($value);
 
         return $parsed === false ? null : gmdate('Y-m-d H:i:s', $parsed);
     }
 
-    private static function normaliseReason(?string $reason): ?string
+    private static function normaliseReason(mixed $reason): ?string
     {
-        if ($reason === null || $reason === '') {
+        if ($reason instanceof \Stringable) {
+            $reason = (string) $reason;
+        }
+
+        if (! is_string($reason) || $reason === '') {
             return null;
         }
 

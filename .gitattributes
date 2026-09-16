@@ -1,0 +1,15 @@
+# Files this package PUBLISHES into a consumer's own repository must be LF on
+# disk in every checkout, including Windows ones.
+#
+# `vendor:publish` copies the bytes as they sit in vendor/. With the default
+# `core.autocrlf=true` on a Windows box — which is what the platform's dev
+# machines run — a source install hands the consumer CRLF files, and the
+# consumer's own `pint` run then reports `line_ending` and rewrites vendor-
+# published files on its first CI run. Then again after every republish. The
+# diff is noise, it is never reviewed, and it makes `vendor:publish --force`
+# look like it changed something when it did not.
+#
+# Scoped to the published artefacts on purpose: marking the whole tree would
+# renormalise every file in the repository in one unrelated commit.
+*.stub text eol=lf
+/config/*.php text eol=lf

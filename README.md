@@ -10,6 +10,11 @@ Implements LAYER 1 and LAYER 2 of [`CONTRACT.md`](../../CONTRACT.md) §2. LAYER 
 Requires PHP 8.3+ and Laravel 12 or 13. Auth runs 13; Coms Coupler stays on 12 until
 after phase 5, so nothing here may depend on a version-specific framework internal.
 
+| Doc | Read it when |
+|---|---|
+| [`INTEGRATION.md`](INTEGRATION.md) | Standing up a **new** product backend. Eight steps. |
+| [`INTEGRATION-coms-coupler.md`](INTEGRATION-coms-coupler.md) | Migrating a product that **already has its own authentication** and must keep serving traffic while it moves. Passport, dual-accept, soak period, legacy call sites. |
+
 ---
 
 ## Install
@@ -21,6 +26,12 @@ php artisan vendor:publish --tag=wollerp-auth-migrations
 php artisan migrate
 ```
 
+The published migrations need no edits. They resolve their connection from the
+published config, they ship Pint-clean, and `users_mirror` already carries the generated
+`id` column (`virtualAs('auth_user_id')`, on MySQL/MariaDB/SQLite) that keeps
+`where('id', …)` and `keyBy('id')` working — so `vendor:publish --force` after an
+upgrade is safe.
+
 Add the guard. The package registers the **driver**; the guard entry is yours:
 
 ```php
@@ -30,31 +41,80 @@ Add the guard. The package registers the **driver**; the guard entry is yours:
 ],
 ```
 
-Protect routes with `auth:wollerp`, or with the `wollerp.auth` middleware alias if you
-want the package's own 401 envelope instead of Laravel's.
+Protect routes with the `wollerp.auth` alias:
 
 ```php
 Route::middleware('wollerp.auth')->group(function () { … });
 Route::middleware('wollerp.hmac')->prefix('api/v1/internal')->group(function () { … });
 ```
 
+**Prefer `wollerp.auth` over `auth:wollerp`, even though the latter reads better.**
+Laravel's own `Authenticate` reaches the guard through `Guard::check()`, and
+`TokenGuard::user()` correctly swallows exceptions and returns null because the `Guard`
+contract requires it — so every failure arrives at Laravel as "not authenticated" and
+gets a **401**, including a JWKS outage, which CONTRACT §3 says is a **503**. A 401
+there sends users back through login for a fault on our side. `wollerp.auth` makes that
+distinction itself.
+
+Use `auth:wollerp` only if you map the exception family in your own handler:
+
+```php
+$exceptions->render(fn (WollerpAuthException $e) => response()->json(
+    ['success' => false, 'error' => $e->reason()], $e->status(),
+));
+```
+
 ### Environment
 
 | Variable | Required | Notes |
 |---|---|---|
-| `WOLLERP_AUTH_ISSUER` | **yes** | Exact string compared to `iss`. No default. |
-| `WOLLERP_SERVICE_SLUG` | **yes** | This product's registry slug (CONTRACT §7). No default. |
+| `WOLLERP_AUTH_ISSUER` | **yes** | Exact string compared to `iss`. No default. Asserted at boot. |
+| `WOLLERP_SERVICE_SLUG` | **yes** | This product's registry slug (CONTRACT §7). No default. Asserted at boot. |
 | `WOLLERP_AUTH_JWKS_URL` | no | Defaults to `{issuer}/.well-known/jwks.json` |
 | `WOLLERP_AUTH_LEEWAY` | no | Default 60 s. **Hard-capped at 60 s.** |
-| `WOLLERP_AUTH_DB_CONNECTION` | no | Where the mirror and denylist live. CC: `product_db`. |
+| `WOLLERP_AUTH_DB_CONNECTION` | no | **Leave unset on a single-database product** — unset means the default connection, tables and migration ledger included. Set it only when the product genuinely runs several connections and the business data is not on the default one (Coms Coupler: `product_db`). |
 | `WOLLERP_HMAC_SECRET_AUTH` | for `/internal/*` | Distinct secret per service pair. |
 | `WOLLERP_INTERNAL_IP_ALLOWLIST` | recommended | Comma-separated CIDRs or addresses. |
+| `WOLLERP_AUTH_BUNDLED_JWKS` | production | Cold-start JWKS fallback. Without it, a JWKS outage on a cold cache is a 503 across the product. |
 
-**There is no default slug and no default issuer, and both must be non-empty or
-`TokenValidator` refuses to construct.** CONTRACT §7 makes the product registry open,
-so this package ships to every product; a baked-in default would mean a mis-deployed
-backend silently announces itself as somebody else and accepts that product's tokens.
-Fail loudly at boot beats fail silently forever.
+**There is no default slug and no default issuer.** CONTRACT §7 makes the product
+registry open, so this package ships to every product; a baked-in default would mean a
+mis-deployed backend silently announces itself as somebody else and accepts that
+product's tokens. Both are asserted **at boot**, not at the first token — `TokenValidator`
+is a lazy singleton, so without the boot check a deploy missing the variable starts
+cleanly, answers `/up` with a 200, passes a smoke test, and then fails for every real
+user. In the console the assertion applies to `config:cache`, `optimize` and the
+long-running request servers only, so `vendor:publish` and `migrate` still work on a
+product that has not been configured yet.
+
+### Registering the client with Auth changes redirect-URI validation
+
+Config on the auth server, but it belongs here because it is found the hard way. Once
+`client_id` maps to a product slug in the registry, **`redirect_uri` validation reads
+the registry's URI list rather than the URI column on the OAuth client row.** Registering
+the id without also registering the URI fails the authorize step with a 400 *before any
+authorization code is issued*, and the error does not name the list it consulted — so it
+looks like a redirect-URI typo and is not one. Register both together, and prove it with
+a real authorize request rather than by reading the client row.
+
+### Laravel puts back the auth surface you deleted
+
+Laravel 11+ recursively merges its own shipped `config/auth.php` into yours, so a product
+with no `User` model and an almost-empty `config/auth.php` still resolves a session
+guard, an eloquent provider pointing at the deleted class, and a password-reset broker —
+none of which appear in the file a reviewer reads. A config file cannot delete a key the
+merge adds, so the package removes the entries that **cannot work** during `register()`:
+an eloquent provider whose model class does not exist, plus the guards, brokers and
+default-broker reference that then dangle. A product that still has a User model is
+untouched.
+
+```bash
+php artisan tinker --execute="dd(config('wollerp-auth.runtime.pruned_auth_config'));"
+```
+
+`WOLLERP_AUTH_HARDEN_AUTH_CONFIG=false` turns it off; see
+`src/Support/AuthConfigHardener.php` for the exact rules and what is deliberately left
+alone.
 
 ---
 
@@ -108,20 +168,35 @@ middleware and the writer:
 
 ```php
 Route::post('/api/v1/internal/revoke', function (Request $request, DenylistChecker $denylist) {
-    $denylist->revoke(
+    $written = $denylist->revoke(
         $request->input('sid'),
         $request->input('jti'),
         $request->input('not_after'),   // ISO-8601 string — see below
         $request->input('reason'),
     );
 
+    if (! $written) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Either sid or jti is required.',
+        ], 422);
+    }
+
     return response()->noContent();
 })->middleware('wollerp.hmac');
 ```
 
-Three things about that payload, because the sender is not hypothetical —
+Four things about that payload, because the sender is not hypothetical —
 `App\Jobs\DispatchRevocationWebhook` posts `{ sid, jti, not_after, reason }`:
 
+- **Every parameter is `mixed` and normalised**, so forwarding `$request->input(...)`
+  straight in is safe under `declare(strict_types=1)`. `{"sid": 12345}` is matched on
+  as `"12345"`; a non-scalar becomes null. A narrower signature would make a malformed
+  body a **500 on a service-plane call**, which the sender treats as retryable and
+  re-delivers five more times, each failing identically.
+- **`revoke()` returns `false` when the payload named neither `sid` nor `jti`**, which
+  is what the 422 above is for. Answering 204 would tell the auth server a revocation it
+  never performed had succeeded, and it would stop retrying.
 - **`not_after` is an ISO-8601 string, not a unix integer.** `revoke()` accepts
   `int`, `string` or `DateTimeInterface` and normalises, so the handler above can
   forward the raw input. An unparsable value stores `null`, which means the row is

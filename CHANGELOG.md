@@ -13,6 +13,115 @@ request across the whole estate; a floating constraint means an unrelated
 
 ## [Unreleased]
 
+Portability work. Brick Case was the control experiment for "what does a second
+product actually cost", and everything below is something it paid for by hand
+that the third product would otherwise pay again. Nothing here changes how a
+token is validated.
+
+### Added
+
+- **The service provider now removes the authentication surface Laravel puts
+  back.** Since Laravel 11 the framework recursively merges its own shipped
+  `config/auth.php` into the application's, so a product with no `User` model and
+  an almost-empty `config/auth.php` still resolves a session guard, an eloquent
+  provider pointing at the deleted class, and a password-reset broker — none of
+  which appear in the file a reviewer reads. A config file cannot delete a key
+  the merge adds, so `Support\AuthConfigHardener` runs in `register()` and drops
+  the entries that **cannot work**: an eloquent provider whose model class does
+  not exist, then any guard or broker whose `provider` now dangles, then
+  `auth.defaults.passwords` if its broker went. It never touches
+  `auth.defaults.guard`, a guard with no `provider` key, or a `database`-driver
+  provider, and it is a complete no-op on a product that still has a User model —
+  which includes Coms Coupler for its whole soak period, where `web`, `api` and
+  `providers.users` are deliberate because dual-accept is the rollback. What was
+  removed is readable at `wollerp-auth.runtime.pruned_auth_config`, precisely
+  because it is invisible in `config/auth.php` by construction.
+  `WOLLERP_AUTH_HARDEN_AUTH_CONFIG=false` disables it.
+- **`WOLLERP_SERVICE_SLUG` and `WOLLERP_AUTH_ISSUER` are asserted at boot.**
+  `TokenValidator` already refused to construct without them, but it is a lazily
+  resolved singleton, so a deploy missing one booted cleanly, answered `/up` with
+  a 200, passed a smoke test and then failed for every real user. The container
+  now refuses to finish booting, so the health check fails and the rollout halts
+  on its own. In the console the assertion applies only to the deploy cache
+  warmers and the long-running request servers
+  (`Support\PlatformIdentity::ASSERTED_CONSOLE_COMMANDS`), so `vendor:publish`,
+  `migrate` and `composer install`'s package discovery still work on a product
+  that has not been configured yet — a package that cannot be installed before it
+  is configured is a package the next product pays for again.
+  `WOLLERP_AUTH_ASSERT_IDENTITY_ON_BOOT=false` disables it.
+- **`Exceptions\UnconfiguredIdentityException`**, deliberately **not** a
+  `WollerpAuthException`. That family is the per-request vocabulary a product
+  maps onto 401 and 503; a missing `.env` line is neither, and a 401 would send
+  every user back through login for a deployment defect.
+- **`users_mirror` ships with the generated `id` column.** `auth_user_id` is the
+  real primary key and `MirrorSynchroniser` writes it by name, so it cannot be
+  renamed — but `id` is Laravel's default route key and `keyBy()` argument, so
+  the first `where('id', …)` in any consumer was `Unknown column`. The migration
+  stub now creates `id` as `virtualAs('auth_user_id')` with an index, guarded to
+  the drivers whose grammar emits a real generated column (MySQL, MariaDB,
+  SQLite). It is skipped elsewhere rather than silently created as an unusable
+  NOT NULL column — SQL Server's grammar ignores `virtualAs()` instead of
+  erroring. This used to be a hand-edit on the *published* file, which every
+  consumer had to be told about and which `vendor:publish --force` undid.
+
+### Changed
+
+- **`DenylistChecker::revoke()` takes `mixed` and returns `bool`.** The
+  documented handler forwards `$request->input(...)`, which returns whatever was
+  in the JSON body, so under the platform's mandatory `declare(strict_types=1)`
+  the previous `?string` signature turned `{"sid": 12345}` into a TypeError — a
+  **500 on a service-plane call**, which the sender treats as retryable and
+  re-delivers five more times. `sid`, `jti` and `reason` are now normalised the
+  way `not_after` already was: an int is stringified and matched on, a non-scalar
+  becomes null. The return value is `false` when the payload named neither a
+  `sid` nor a `jti`, so the handler can answer 422 instead of telling the auth
+  server a revocation it never performed had succeeded. Existing callers are
+  unaffected — the parameter set and order are unchanged and the return was
+  previously `void`.
+- **The published migration stubs are Pint-clean** (`class_definition`,
+  `braces_position`, `ordered_imports`, `fully_qualified_strict_types`,
+  `line_ending`), and a scoped `.gitattributes` pins the published artefacts to
+  LF. Without it, `core.autocrlf` on a Windows checkout hands a source install
+  CRLF files that the consumer's own Pint run rewrites on its first CI run, and
+  again after every republish.
+- **`WOLLERP_AUTH_DB_CONNECTION` is documented for the common case.** The config
+  comment said "For Coms Coupler that is `product_db`", from which a
+  single-database product reasonably concluded it had to invent a second
+  connection. The correct answer — leave it unset, and the package uses the
+  default connection, migration ledger included — is now stated first, with Coms
+  Coupler as the exception it is.
+- **`INTEGRATION.md` is an integration guide again.** It was a Coms Coupler
+  migration runbook, title included: for a greenfield product roughly half was
+  inapplicable and nothing signposted which half. It is now a short generic guide
+  covering registration, install, publish, guard, routes, the revoke handler,
+  backfill and a nine-line verification checklist. The migration specifics — the
+  88 files / 106 occurrences, the nine legacy `'id'` call sites with line
+  numbers, the Passport soak, the phase-5 deletion list — moved to
+  `INTEGRATION-coms-coupler.md`, which each document now points at from the top.
+- **The route-protection recommendation is inverted: `wollerp.auth` by default,
+  `auth:wollerp` only with a handler.** Laravel's own `Authenticate` reaches the
+  guard through `Guard::check()`, and `TokenGuard::user()` correctly swallows
+  `WollerpAuthException` and returns null because the `Guard` contract requires
+  it — so a JWKS outage arrives at the client as a **401** when CONTRACT §3 says
+  it is a 503, which is the exact failure the guide's own checklist demanded be a
+  503. Products that want their own envelope are told the price: a
+  `WollerpAuthException` render hook mapping `status()`, without which those
+  checks cannot pass.
+- **Registering an OAuth client against a product changes redirect-URI
+  validation**, and that is now written down in both documents. Once `client_id`
+  maps to a slug, validation reads the registry's URI list rather than the client
+  row's, so registering the id without the URI 400s the authorize step before any
+  code is issued — and the error looks like a redirect-URI typo when it is not.
+
+### Tests
+
+- 236 → 265, zero failures. New coverage: the auth-config hardener in both
+  directions (it removes the merged-in surface; it is a no-op on Coms Coupler's
+  shape), the boot assertion including that it does **not** break
+  `vendor:publish`, `migrate` or `wollerp:conformance`, the generated `id` column
+  against the real published stub on SQLite, and the malformed revocation
+  payloads. No conformance assertion was weakened.
+
 ## [0.1.0] - 2026-09-16
 
 First tagged release. Everything below is new; the package did not exist before.

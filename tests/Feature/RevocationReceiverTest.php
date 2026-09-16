@@ -102,3 +102,63 @@ it('revokes sid and jti independently without colliding', function (): void {
 
     expect(DB::table('revoked_tokens')->count())->toBe(2);
 });
+
+/*
+|--------------------------------------------------------------------------
+| Malformed payloads
+|--------------------------------------------------------------------------
+|
+| The documented handler forwards `$request->input(...)` straight into
+| revoke(), and `input()` returns whatever was in the JSON body. Under the
+| platform's mandatory declare(strict_types=1) a narrower signature turns
+| `{"sid": 12345}` into a TypeError — a 500 on a service-plane call, where the
+| correct answer is a 422 naming the field. These pin that it cannot come back,
+| in both directions: nothing throws, and nothing bogus gets stored.
+|
+*/
+
+it('does not throw on a numeric sid, it matches on it', function (): void {
+    /** @var DenylistChecker $denylist */
+    $denylist = app(DenylistChecker::class);
+
+    expect($denylist->revoke(12345, null, '2026-09-15T12:20:00+00:00', 'logout'))->toBeTrue()
+        ->and(DB::table('revoked_tokens')->value('sid'))->toBe('12345')
+        ->and($denylist->matches('12345', null))->toBeTrue();
+});
+
+it('does not throw on a non-scalar sid or jti', function (mixed $value): void {
+    /** @var DenylistChecker $denylist */
+    $denylist = app(DenylistChecker::class);
+
+    expect($denylist->revoke($value, $value, null, null))->toBeFalse()
+        ->and(DB::table('revoked_tokens')->count())->toBe(0);
+})->with([
+    'array' => [['01JBZ3K5M7N9P1Q3R5S7T9V1W3']],
+    'object' => [(object) ['sid' => '01JBZ3K5M7N9P1Q3R5S7T9V1W3']],
+    'bool' => [true],
+    'float' => [1.5],
+]);
+
+it('reports false when the payload named nothing, so the handler can answer 422', function (): void {
+    /** @var DenylistChecker $denylist */
+    $denylist = app(DenylistChecker::class);
+
+    // A 204 here would tell the auth server a revocation it never performed had
+    // succeeded, and DispatchRevocationWebhook would stop retrying.
+    expect($denylist->revoke(null, null, time(), 'logout'))->toBeFalse()
+        ->and($denylist->revoke('01JBZ3K5M7N9P1Q3R5S7T9V1W3', null, time(), 'logout'))->toBeTrue();
+});
+
+it('does not throw on a malformed not_after or reason', function (): void {
+    /** @var DenylistChecker $denylist */
+    $denylist = app(DenylistChecker::class);
+
+    expect($denylist->revoke('01JBZ3K5M7N9P1Q3R5S7T9V1W3', null, ['nope'], ['nope']))->toBeTrue();
+
+    $row = DB::table('revoked_tokens')->first();
+
+    // An unusable not_after means "never prune this row". Keeping a revocation
+    // too long is the safe direction to fail; dropping one is not.
+    expect($row->expires_at)->toBeNull()
+        ->and($row->reason)->toBeNull();
+});

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Database\Schema\Builder;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -17,10 +18,27 @@ use Illuminate\Support\Facades\Schema;
  */
 return new class extends Migration
 {
+    /**
+     * Drivers whose schema grammar emits a real generated column for
+     * `virtualAs()`. See addIdAlias() for why the alias exists at all.
+     *
+     * Verified on MariaDB 11.5.2 (`int unsigned as (auth_user_id)`) and on
+     * SQLite (`integer as (auth_user_id)`, which is what the test suites of both
+     * this package and its consumers run against).
+     *
+     * The guard matters because a driver with no `modifyVirtualAs` — SQL Server
+     * — does not error on `virtualAs()`, it silently ignores it. That would
+     * create a plain NOT NULL `id` column with no default and no value, and the
+     * first mirror write would fail. Skipping is the honest failure: `id` is
+     * absent, and the product sees it immediately.
+     */
+    private const GENERATED_COLUMN_DRIVERS = ['mysql', 'mariadb', 'sqlite'];
+
     public function up(): void
     {
         $this->schema()->create($this->table(), function (Blueprint $table): void {
             $table->unsignedInteger('auth_user_id')->primary();   // token `uid`
+            $this->addIdAlias($table);
             $table->char('auth_user_uuid', 26)->unique();         // token `sub`
             $table->string('name')->nullable();
             $table->string('email')->nullable();
@@ -34,14 +52,48 @@ return new class extends Migration
         });
     }
 
+    /**
+     * `id`, as a generated column reading `auth_user_id`.
+     *
+     * This is not a convenience. `auth_user_id` is the real primary key and
+     * MirrorSynchroniser writes it by name — `updateOrCreate(['auth_user_id' =>
+     * …])` — so the column cannot be renamed without breaking all three sync
+     * layers. Meanwhile `id` is Laravel's default route key, the default
+     * `keyBy()` argument, and what everybody types from habit, so the first
+     * `where('id', …)` anywhere in a consuming product is `Unknown column 'id'`.
+     *
+     * A generated column resolves both: `auth_user_id` stays the key the
+     * synchroniser writes, and `id` is a real selected column, so `$user->id`,
+     * `keyBy('id')` and `whereIn('id', …)` all work with no application edits.
+     * It is virtual, not stored, so it costs index space and no row bytes.
+     *
+     * Remove it only if you have grepped the product for `'id'` used against
+     * this table and found nothing — it is cheaper to keep than to re-add after
+     * a `vendor:publish --force` has overwritten your hand-edit.
+     */
+    private function addIdAlias(Blueprint $table): void
+    {
+        if (! in_array($this->driver(), self::GENERATED_COLUMN_DRIVERS, true)) {
+            return;
+        }
+
+        $table->unsignedInteger('id')->virtualAs('auth_user_id');
+        $table->index('id');
+    }
+
     public function down(): void
     {
         $this->schema()->dropIfExists($this->table());
     }
 
-    private function schema(): \Illuminate\Database\Schema\Builder
+    private function schema(): Builder
     {
         return Schema::connection($this->connection());
+    }
+
+    private function driver(): string
+    {
+        return $this->schema()->getConnection()->getDriverName();
     }
 
     /**

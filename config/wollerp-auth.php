@@ -151,11 +151,74 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Boot-time identity assertion
+    |--------------------------------------------------------------------------
+    |
+    | ON by default. The container refuses to finish booting when `audience` or
+    | `issuer` is empty, rather than booting cleanly, answering `/up` with a 200,
+    | passing a smoke test and then failing for every real user — which is what
+    | happens when the only guard is TokenValidator's constructor, because that
+    | singleton is not resolved until the first request carrying a token.
+    |
+    | In the console it applies only to the deploy cache warmers and the
+    | long-running request servers, so `vendor:publish`, `migrate` and
+    | `composer install`'s package discovery still work on a product that has not
+    | been configured yet. The list is PlatformIdentity::ASSERTED_CONSOLE_COMMANDS.
+    |
+    | Turning this off does not make an unconfigured product work — it only moves
+    | the failure back to the first authenticated request.
+    |
+    */
+
+    'assert_identity_on_boot' => (bool) env('WOLLERP_AUTH_ASSERT_IDENTITY_ON_BOOT', true),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Auth config hardening
+    |--------------------------------------------------------------------------
+    |
+    | ON by default. Laravel 11+ recursively merges its own shipped
+    | `config/auth.php` into yours, so a product that deleted its `User` model
+    | and emptied this file still resolves a session guard, an eloquent provider
+    | pointing at the deleted class, and a password-reset broker — none of which
+    | appear in `config/auth.php`, so a reviewer reading that file sees none of
+    | it. A config file cannot delete a key the merge adds.
+    |
+    | This removes only entries that CANNOT work: an eloquent provider whose
+    | model class does not exist, and the guards, brokers and default-broker
+    | reference that then dangle. A product that still has a User model — Coms
+    | Coupler for its whole soak period — is untouched. See
+    | Wollerp\AuthClient\Support\AuthConfigHardener for the exact rules.
+    |
+    | What was removed is readable at `wollerp-auth.runtime.pruned_auth_config`,
+    | precisely because it is invisible in config/auth.php by construction.
+    |
+    */
+
+    'harden_auth_config' => (bool) env('WOLLERP_AUTH_HARDEN_AUTH_CONFIG', true),
+
+    /*
+    |--------------------------------------------------------------------------
     | Database
     |--------------------------------------------------------------------------
     |
-    | The mirror and the denylist live in the PRODUCT database. For Coms Coupler
-    | that is `product_db`, not the default connection.
+    | Where `users_mirror` (CONTRACT §4) and `revoked_tokens` (§6) live.
+    |
+    | **Most products should leave WOLLERP_AUTH_DB_CONNECTION unset.** Unset
+    | means "the default connection", and that is the right answer for every
+    | single-database product. You do NOT need to invent a second connection to
+    | install this package, and you should not: the published migrations resolve
+    | their connection from this key and also override getConnection(), so the
+    | tables AND the `migrations` ledger row both land wherever this points.
+    |
+    | Set it only when the product genuinely runs more than one connection and
+    | the business data is not on the default one. Coms Coupler is the example
+    | and it is not the norm: it runs `auth_db` + `product_db` from before the
+    | separation, so it sets `WOLLERP_AUTH_DB_CONNECTION=product_db` to keep the
+    | mirror beside the tables that join to it.
+    |
+    | Whatever you choose, `php artisan wollerp:conformance` reports the
+    | connection it actually resolved, so this is verifiable rather than assumed.
     |
     */
 

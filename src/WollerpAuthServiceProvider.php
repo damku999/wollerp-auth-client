@@ -27,6 +27,8 @@ use Wollerp\AuthClient\Jwks\JwksClient;
 use Wollerp\AuthClient\Mirror\MirroredUser;
 use Wollerp\AuthClient\Mirror\MirrorSynchroniser;
 use Wollerp\AuthClient\Revocation\DenylistChecker;
+use Wollerp\AuthClient\Support\AuthConfigHardener;
+use Wollerp\AuthClient\Support\PlatformIdentity;
 use Wollerp\AuthClient\Token\TokenValidator;
 
 final class WollerpAuthServiceProvider extends ServiceProvider
@@ -34,6 +36,8 @@ final class WollerpAuthServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/wollerp-auth.php', 'wollerp-auth');
+
+        $this->hardenAuthConfig();
 
         // Done in register(), not boot(): any model instantiated before boot
         // completes must already know its connection and table.
@@ -53,9 +57,60 @@ final class WollerpAuthServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        $this->assertPlatformIdentityIsConfigured();
         $this->registerGuardDriver();
         $this->registerMiddlewareAliases();
         $this->registerPublishing();
+    }
+
+    /**
+     * Remove the authentication surface Laravel's config merge puts back after a
+     * product has deliberately deleted it — but only where the merged-in entry
+     * cannot possibly work. See AuthConfigHardener for exactly what goes and
+     * what is left alone; it is a no-op on a product that still has a User
+     * model, which includes Coms Coupler through its whole soak period.
+     *
+     * Must be in register(): after configuration is loaded, before anything
+     * resolves the auth manager.
+     */
+    private function hardenAuthConfig(): void
+    {
+        if ((bool) $this->config('harden_auth_config', true) === false) {
+            return;
+        }
+
+        AuthConfigHardener::prune($this->app->make(ConfigRepository::class));
+    }
+
+    /**
+     * Refuse to finish booting without an identity, so a deploy missing
+     * WOLLERP_SERVICE_SLUG fails its health check instead of answering `/up`
+     * with a 200 and then failing for every real user. PlatformIdentity carries
+     * the reasoning and the console allowlist.
+     */
+    private function assertPlatformIdentityIsConfigured(): void
+    {
+        if ((bool) $this->config('assert_identity_on_boot', true) === false) {
+            return;
+        }
+
+        if ($this->app->runningInConsole() && ! $this->isAssertedConsoleCommand()) {
+            return;
+        }
+
+        PlatformIdentity::assertConfigured($this->app->make(ConfigRepository::class));
+    }
+
+    private function isAssertedConsoleCommand(): bool
+    {
+        // runningConsoleCommand() is Foundation, not Contracts: a package booted
+        // on a bare container (or a future skeleton) must degrade to "not one of
+        // the asserted commands" rather than fatal on a missing method.
+        if (! method_exists($this->app, 'runningConsoleCommand')) {
+            return false;
+        }
+
+        return (bool) $this->app->runningConsoleCommand(PlatformIdentity::ASSERTED_CONSOLE_COMMANDS);
     }
 
     private function registerJwks(): void
