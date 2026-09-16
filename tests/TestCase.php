@@ -11,6 +11,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Orchestra\Testbench\TestCase as Orchestra;
+use Wollerp\AuthClient\Conformance\ConformanceSuite;
 use Wollerp\AuthClient\Guard\TokenGuard;
 use Wollerp\AuthClient\Mirror\MirrorSynchroniser;
 use Wollerp\AuthClient\Revocation\DenylistChecker;
@@ -157,6 +158,15 @@ abstract class TestCase extends Orchestra
     public function denylist(): DenylistChecker
     {
         return $this->app->make(DenylistChecker::class);
+    }
+
+    /**
+     * The suite that ships to consumers, resolved the way a consumer resolves
+     * it — through the container, from the live config.
+     */
+    public function conformance(): ConformanceSuite
+    {
+        return $this->app->make(ConformanceSuite::class);
     }
 
     public function mirror(): MirrorSynchroniser

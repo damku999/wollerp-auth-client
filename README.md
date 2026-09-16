@@ -194,15 +194,58 @@ to delete a test.
 
 ## Conformance suite
 
-Mandatory. Generates a real 2048-bit RSA keypair at runtime — no fixtures, no
-checked-in keys, no dependency on the auth server being reachable — and mints both
-genuine tokens and the exact tokens an attacker would try.
+Mandatory, and it runs in two places for two different reasons.
+
+It generates a real 2048-bit RSA keypair at runtime — no fixtures, no checked-in
+keys, no dependency on the auth server being reachable — and mints both genuine
+tokens and the exact tokens an attacker would try.
+
+### In a consumer — the one that gates a deploy
+
+```bash
+php artisan wollerp:conformance --strict
+```
+
+Ships in `src/`, so there is nothing to install, nothing to publish and no test
+framework involved. It runs against **this product's** real `issuer`, `audience`,
+`leeway` and length limit — the live values, including a warm `config:cache` —
+and then checks the live guard, middleware aliases, denylist connection and
+mirror. It makes no network calls and never touches the real JWKS cache, so it
+is safe on a production host and deterministic in CI with no egress.
+
+Exit code 0 or 1. Wire it into the pipeline, not into a runbook.
+
+| Flag | |
+|---|---|
+| `--strict` | Treat posture warnings as failures. Use this in CI. |
+| `--json` | The full report as JSON, for a pipeline to parse. |
+| `--quiet-passes` | Only failures, warnings and skips. |
+
+Or, from the product's own Pest / PHPUnit suite:
+
+```php
+use Wollerp\AuthClient\Conformance\ConformanceSuite;
+
+it('validates Wollerp tokens correctly', function () {
+    $report = app(ConformanceSuite::class)->run(strict: true);
+
+    expect($report->passed())->toBeTrue($report->failureSummary());
+});
+```
+
+> Earlier revisions of INTEGRATION.md said to run `pest --testsuite=conformance`
+> from inside the consuming app. That never worked — Composer does not load a
+> dependency's `autoload-dev`, so these test files are not on a product's
+> autoloader, and the harness needs `orchestra/testbench`. The assertions moved
+> into `src/` for exactly that reason.
+
+### In this repo — the one that proves the package is correct
 
 ```bash
 composer test:conformance
 ```
 
-| File | Guards |
+| Area | Guards |
 |---|---|
 | `AcceptsValidToken` | The happy path, and that no authority claim leaks into the token |
 | `RejectsAlgNone` | The oldest bypass: a verifier that honours the header skips signature checking entirely |
@@ -214,11 +257,66 @@ composer test:conformance
 | `RejectsTamperedSignature` | Signature verification actually happening |
 | `RejectsUnknownKid` | Rotation, throttled refetch, and JWKS outage ≠ auth outage |
 | `Leeway` | The 60-second cap enforced in code, not just documented |
+| `ShippedSuite` | That the consumer-facing suite is green when the wiring is right, **red when it is wrong**, and cannot be quietly shrunk |
+
+### Why a check cannot be quietly dropped
+
+`ConformanceSuite::CHECKS` is the manifest. A `suite.integrity` check compares
+what actually executed against it, and against `BYPASS_GUARDS` — the subset that
+guards a complete authentication bypass. Deleting a check fails the run instead
+of shortening it, in the package *and* in every consumer, and `ShippedSuiteTest`
+pins the same thing from the other side.
+
+This is deliberate. Everything in that subset is also something somebody could
+be tempted to delete at 2am when it goes red during a release.
 
 > **Windows dev boxes.** `openssl_pkey_new()` fails with
 > `error:80000003:system library::No such process` when `OPENSSL_CONF` is not set for
 > the CLI `php.ini`. Point it at your PHP build's `extras/ssl/openssl.cnf` before
-> running the suite. `TokenFactory` says so in the exception message too.
+> running the suite. `TokenForge` says so in the exception message too.
+
+---
+
+## `composer.lock` is committed, which is not what a library normally does
+
+Composer ignores a dependency's lock file entirely, so this one has no effect on
+any consumer. The orthodox advice is therefore to gitignore it, and for almost
+every library that advice is right.
+
+It is committed here for one reason: **this package's dev dependency tree
+executes arbitrary code that decides whether the estate's authentication gate
+passes.** Pest, its plugins, PHPUnit and Testbench all run in-process during the
+run that certifies `alg` is pinned to RS256. Without a lock:
+
+- a green run is not reproducible — "165 passed" on a laptop and "165 passed" in
+  CI were not necessarily runs against the same code, and last month's green run
+  cannot be re-created at all, which makes bisecting a regression guesswork;
+- a yanked, compromised or silently-republished dev package enters the run with
+  nothing recording what changed. The lock pins exact versions *and* dist
+  references, so that shows up as a diff.
+
+### The cost, stated plainly
+
+Committing the lock narrows what CI proves from "any resolution the constraints
+allow" to "this one". For a library declaring `illuminate/* ^12.0|^13.0` that is
+a real loss: the lock can sit on Laravel 13 for a year while every consumer runs
+12, and CI would never notice the package had stopped working on 12.
+
+That loss is recoverable and the reproducibility loss is not, which is what
+decides it. `.github/workflows/ci.yml` runs three kinds of job:
+
+| Job | Lock | Proves |
+|---|---|---|
+| `locked` | `composer install --locked` | A specific commit + a specific tree is green, reproducibly, on PHP 8.3 and 8.4 |
+| `floating` | `composer update`, `--prefer-lowest` and highest | The declared constraint range actually works, not just the locked point in it |
+| `shipped-suite` | locked, then `dump-autoload --no-dev` | The conformance suite is reachable with no dev autoload — i.e. from inside a consumer |
+
+**If you ever drop the `floating` jobs, ignore the lock again.** Keeping the lock
+without them is strictly worse than not having it: you would be trading real
+coverage for reproducibility you were no longer checking.
+
+Consumers are unaffected either way — they pin `wollerp/auth-client:0.1.0`
+exactly, per CONTRACT §8, and resolve their own tree.
 
 ---
 
@@ -242,9 +340,17 @@ composer test:conformance
   us hammer the auth server. Cold-cache fetches do not spend the throttle slot: the
   fetch that filled the cache *is* the fresh copy.
 - **`bundled_keys`** is the last-resort fallback when the endpoint is unreachable *and*
-  nothing is cached. Populate it at deploy time so a JWKS outage on a cold cache is not
-  an auth outage.
+  nothing is cached. Populate it at deploy time from `WOLLERP_AUTH_BUNDLED_JWKS` (a JWKS
+  document, a bare list of JWKs or a single JWK, as raw JSON or base64) so a JWKS outage
+  on a cold cache is not an auth outage. An unparsable value degrades to an empty list
+  rather than throwing — it is read inside a config file, and a config file that throws
+  takes every `php artisan` command with it. `wollerp:conformance` warns on an empty
+  bundle and **fails** on one that is present but unusable, because a fallback that looks
+  configured and is not is worse than no fallback at all.
 - **`users:sync` carries `#[AsCommand]` deliberately.** Laravel only defers instantiating
-  commands that have it; without it the command — and therefore the `Signer`, which
-  refuses to exist without an HMAC secret — is constructed at console boot, and a product
-  that has not been issued a secret yet could not run `php artisan` at all.
+  commands that have it; without it every command is constructed at console boot, which
+  is how the original `Signer` constructor guard managed to break `php artisan list` on
+  any product not yet issued an HMAC secret. That guard now lives in `sign()`, so signing
+  without a secret is still impossible and merely existing unconfigured is fine — but the
+  attribute stays, because construction-at-boot is a trap the next dependency will fall
+  into too.

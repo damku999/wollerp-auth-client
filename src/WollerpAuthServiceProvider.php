@@ -8,11 +8,14 @@ use Illuminate\Contracts\Auth\Factory as AuthFactory;
 use Illuminate\Contracts\Cache\Factory as CacheFactory;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\ConnectionResolverInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
+use Wollerp\AuthClient\Conformance\ConformanceSuite;
+use Wollerp\AuthClient\Console\ConformanceCommand;
 use Wollerp\AuthClient\Console\SyncUsersCommand;
 use Wollerp\AuthClient\Guard\TokenGuard;
 use Wollerp\AuthClient\Hmac\Signer;
@@ -44,7 +47,8 @@ final class WollerpAuthServiceProvider extends ServiceProvider
         $this->registerMirror();
         $this->registerServicePlane();
         $this->registerMiddleware();
-        $this->registerCommand();
+        $this->registerConformance();
+        $this->registerCommands();
     }
 
     public function boot(): void
@@ -93,15 +97,29 @@ final class WollerpAuthServiceProvider extends ServiceProvider
         });
 
         $this->app->singleton(DenylistChecker::class, function (Application $app): DenylistChecker {
-            $connection = $this->config('database.connection');
-
             return new DenylistChecker(
-                $app->make(ConnectionResolverInterface::class)->connection(
-                    is_string($connection) && $connection !== '' ? $connection : null
-                ),
+                $this->businessConnection($app),
                 (string) $this->config('database.revoked_table', 'revoked_tokens'),
             );
         });
+    }
+
+    /**
+     * The connection the mirror and the denylist live on. CONTRACT §4/§6 put
+     * both in the PRODUCT database, which for a multi-database consumer is not
+     * the default connection.
+     *
+     * Resolved in one place so the conformance suite's denylist probe runs
+     * against exactly the connection the DenylistChecker was handed, rather
+     * than against a second reading of the same config that could drift.
+     */
+    private function businessConnection(Application $app): ConnectionInterface
+    {
+        $connection = $this->config('database.connection');
+
+        return $app->make(ConnectionResolverInterface::class)->connection(
+            is_string($connection) && $connection !== '' ? $connection : null
+        );
     }
 
     private function registerMirror(): void
@@ -155,8 +173,37 @@ final class WollerpAuthServiceProvider extends ServiceProvider
         });
     }
 
-    private function registerCommand(): void
+    /**
+     * The conformance suite is bound unconditionally, not behind
+     * runningInConsole(), so a product's own test suite can assert it in one
+     * line without installing anything:
+     *
+     *   expect(app(ConformanceSuite::class)->run(strict: true)->passed())->toBeTrue();
+     *
+     * Everything it needs from the container that costs something to build —
+     * a database connection, the mirror model — is handed in as a lazy factory,
+     * so binding it is free until it is actually run.
+     */
+    private function registerConformance(): void
     {
+        $this->app->singleton(ConformanceSuite::class, function (Application $app): ConformanceSuite {
+            return new ConformanceSuite(
+                $app->make(ConfigRepository::class),
+                $app->make(AuthFactory::class),
+                $app->bound('router') ? $app->make('router') : null,
+                fn (): DenylistChecker => $app->make(DenylistChecker::class),
+                fn (): Model => $app->make((string) $this->config('mirror.model', MirroredUser::class)),
+                fn (): ConnectionInterface => $this->businessConnection($app),
+            );
+        });
+    }
+
+    private function registerCommands(): void
+    {
+        $this->app->singleton(ConformanceCommand::class, function (Application $app): ConformanceCommand {
+            return new ConformanceCommand($app->make(ConformanceSuite::class));
+        });
+
         $this->app->singleton(SyncUsersCommand::class, function (Application $app): SyncUsersCommand {
             return new SyncUsersCommand(
                 $app->make(HttpFactory::class),
@@ -170,7 +217,10 @@ final class WollerpAuthServiceProvider extends ServiceProvider
         });
 
         if ($this->app->runningInConsole()) {
-            $this->commands([SyncUsersCommand::class]);
+            $this->commands([
+                ConformanceCommand::class,
+                SyncUsersCommand::class,
+            ]);
         }
     }
 

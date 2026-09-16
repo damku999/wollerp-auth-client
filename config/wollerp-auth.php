@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+use Wollerp\AuthClient\Mirror\MirroredUser;
+use Wollerp\AuthClient\Support\BundledKeys;
+
 return [
 
     /*
@@ -81,6 +84,30 @@ return [
     | unreachable AND nothing is cached. Populate it with the current public JWK
     | at deploy time so a JWKS outage on a cold cache is not an auth outage.
     |
+    | Two ways to populate it, and they merge — use whichever suits the deploy:
+    |
+    |   1. WOLLERP_AUTH_BUNDLED_JWKS, which takes a JWKS document, a bare list
+    |      of JWKs or a single JWK, as raw JSON or base64. Base64 is the sane
+    |      choice in a .env file:
+    |
+    |        WOLLERP_AUTH_BUNDLED_JWKS="$(curl -fsS \
+    |          https://auth.wollerp.lumicorelabs.com/.well-known/jwks.json | base64 -w0)"
+    |
+    |   2. Literal entries in the array below, in a published config file that
+    |      goes through review. Preferred when the key rotation is planned and
+    |      you want the diff on the record.
+    |
+    | An unparsable env value yields an empty list — the same behaviour as not
+    | setting it — so a bad value degrades to today's 503 and never throws out
+    | of a config file. `php artisan wollerp:conformance` fails outright on a
+    | bundle that is present but unusable, because that is worse than an empty
+    | one: the fallback looks configured and will not fire.
+    |
+    | This is not a trust escalation. A bundled key still has to match the
+    | token's `kid` and verify the RS256 signature, JwksClient drops anything
+    | that is not an RSA RS256 signing key of at least 2048 bits, and anyone
+    | who can set this variable can already repoint WOLLERP_AUTH_ISSUER.
+    |
     */
 
     'jwks' => [
@@ -93,16 +120,19 @@ return [
         'ttl' => (int) env('WOLLERP_AUTH_JWKS_TTL', 21600),
         'refetch_cooldown' => (int) env('WOLLERP_AUTH_JWKS_REFETCH_COOLDOWN', 60),
         'http_timeout' => (int) env('WOLLERP_AUTH_JWKS_TIMEOUT', 5),
-        'bundled_keys' => [
-            // [
-            //     'kty' => 'RSA',
-            //     'use' => 'sig',
-            //     'alg' => 'RS256',
-            //     'kid' => '2026-09',
-            //     'n'   => '…base64url…',
-            //     'e'   => 'AQAB',
-            // ],
-        ],
+        'bundled_keys' => array_merge(
+            BundledKeys::fromEnv(env('WOLLERP_AUTH_BUNDLED_JWKS')),
+            [
+                // [
+                //     'kty' => 'RSA',
+                //     'use' => 'sig',
+                //     'alg' => 'RS256',
+                //     'kid' => '2026-09',
+                //     'n'   => '…base64url…',
+                //     'e'   => 'AQAB',
+                // ],
+            ],
+        ),
     ],
 
     /*
@@ -147,7 +177,7 @@ return [
 
     'mirror' => [
         'enabled' => (bool) env('WOLLERP_AUTH_MIRROR_ENABLED', true),
-        'model' => \Wollerp\AuthClient\Mirror\MirroredUser::class,
+        'model' => MirroredUser::class,
     ],
 
     /*

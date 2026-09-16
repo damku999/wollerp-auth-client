@@ -46,10 +46,21 @@ The package is not on Packagist. Add the repository to CC's `composer.json`
 "repositories": [
     {
         "type": "vcs",
-        "url": "git@github.com:lumicorelabs/wollerp-auth-client.git"
+        "url": "git@github.com:damku999/wollerp-auth-client.git"
     }
 ],
 ```
+
+> ⚠️ **Confirm this URL before you use it.** The package's own working checkout
+> currently has `origin` set to `git@github.com:damku999/wollerp-auth-client.git`,
+> which is not the URL above. One of the two is a personal fork and the other is
+> the canonical remote, and this document cannot tell which. Resolve it before
+> step 1 — pointing a consumer at a fork means the exact version it pins is
+> whatever that fork happens to tag, which defeats CONTRACT §8 entirely.
+>
+> ```bash
+> git -C packages/wollerp-auth-client remote -v   # what the release is tagged on
+> ```
 
 Then:
 
@@ -146,6 +157,9 @@ WOLLERP_AUTH_URL=https://auth.wollerp.lumicorelabs.com
 WOLLERP_HMAC_SECRET_AUTH=<the cc↔auth shared secret, from the secret manager>
 WOLLERP_INTERNAL_IP_ALLOWLIST=10.0.0.0/8,<auth egress IP>
 
+# ── Cold-start JWKS fallback. Not optional in production — see below ──
+WOLLERP_AUTH_BUNDLED_JWKS=<base64 of the live JWKS document>
+
 # ── Optional; defaults are correct for CC ──
 # WOLLERP_AUTH_JWKS_URL       defaults to {issuer}/.well-known/jwks.json
 # WOLLERP_AUTH_LEEWAY=60      hard-capped at 60s regardless
@@ -155,8 +169,12 @@ WOLLERP_INTERNAL_IP_ALLOWLIST=10.0.0.0/8,<auth egress IP>
 ### `WOLLERP_SERVICE_SLUG` has no default, deliberately
 
 `config/wollerp-auth.php` reads `env('WOLLERP_SERVICE_SLUG')` with **no
-fallback**, in two places (`audience` and `hmac.project`), and `TokenValidator`
-and `Signer` both throw on construction when it is empty.
+fallback**, in two places (`audience` and `hmac.project`). `TokenValidator`
+throws on construction when it is empty, and `Signer` throws when asked to sign
+with it empty — the signer's guard is at the signing boundary rather than the
+constructor, because a singleton that refuses to *exist* takes `php artisan
+list` and `tinker` down with it on a product that has not been issued a secret
+yet.
 
 That is not an oversight and it must not be "fixed" by adding `'cc'` as the
 default. CONTRACT §7 makes the product registry open — this same package ships
@@ -179,7 +197,56 @@ value still refuses to construct rather than comparing `iss` against `''`.
 php artisan tinker --execute="dd(app(Wollerp\AuthClient\Token\TokenValidator::class)->audience());"
 # must print "cc" — if it throws, the variable is missing or config is cached stale
 php artisan config:clear
+php artisan wollerp:conformance          # names anything else still unwired
 ```
+
+### `WOLLERP_AUTH_BUNDLED_JWKS` — the cold-start fallback
+
+`jwks.bundled_keys` is the last thing between a JWKS outage and an auth outage.
+It is consulted only when the endpoint is **unreachable** *and* nothing is
+cached — which is precisely the state of a freshly booted host: a deploy, a
+scale-out under load, a `cache:clear`, or a container restart during an Auth
+incident. With it empty (the shipped default), §8 check 10 is a **503 across the
+whole product** until Auth comes back. With it populated, that host serves
+normally on key material it already trusts.
+
+Populate it at deploy time:
+
+```bash
+# From a CC app server, which is also a useful test of egress to Auth.
+curl -fsS https://auth.wollerp.lumicorelabs.com/.well-known/jwks.json | base64 -w0
+# locally: curl -fsS http://auth.wollerp.test/.well-known/jwks.json | base64 -w0
+```
+
+Put the output in `WOLLERP_AUTH_BUNDLED_JWKS`. The variable accepts a full JWKS
+document, a bare list of JWKs, or a single JWK — as raw JSON or base64. Prefer
+base64: a JWKS document is full of `"`, `{` and `=`, which is miserable to quote
+correctly in a `.env` and silently half-works when you get it wrong. Alternative:
+paste the JWK literally into the published `config/wollerp-auth.php`, which puts
+the rotation on the record in a reviewed diff. The two sources merge.
+
+Then confirm it actually parsed and converts to a usable key — do not assume:
+
+```bash
+php artisan config:clear
+php artisan wollerp:conformance --strict | grep bundled_keys
+# posture.jwks.bundled_keys_present   PASS
+# wiring.jwks.bundled_keys_usable     PASS
+```
+
+`wollerp:conformance` **warns** when the bundle is empty and **fails** when it is
+present but unusable. A truncated or typo'd bundle is worse than an empty one:
+the fallback looks configured, nobody looks at it again, and it does not fire on
+the one morning it was needed.
+
+**Refresh it on every signing-key rotation** (every 90 days — see §8 check 8).
+A bundle holding only a rotated-out key is an empty bundle with extra steps.
+
+This is not a trust escalation, before anyone asks. A bundled key still has to
+match the token's `kid` and then verify the RS256 signature; `JwksClient` drops
+anything that is not an RSA RS256 signing key of at least 2048 bits; and anyone
+who can write this variable can already repoint `WOLLERP_AUTH_ISSUER`, which is
+a far easier forgery than crafting a JWK.
 
 ---
 
@@ -515,18 +582,46 @@ Do not proceed to a production cutover until every line is green.
 **The conformance suite, in CC's own CI — not just the package's.**
 
 ```bash
-vendor/bin/pest --testsuite=conformance    # from the package inside CC's vendor/
+php artisan wollerp:conformance --strict
 ```
 
 Running it in the package's own repo proves the package is correct. Running it
 *inside CC* proves it is correct **with CC's PHP build, CC's OpenSSL, CC's
-config cache and CC's autoloader**. Those are the things that differ between a
-green library and a broken deploy. Wire it into CC's pipeline permanently, not
-as a one-off.
+config cache, CC's `WOLLERP_SERVICE_SLUG`, CC's guard registration and CC's
+`product_db` connection**. Those are the things that differ between a green
+library and a broken deploy. Wire it into CC's pipeline permanently, not as a
+one-off.
+
+> **This instruction used to be wrong.** It said to run
+> `vendor/bin/pest --testsuite=conformance` from inside CC. That could not work:
+> Composer never loads a dependency's `autoload-dev`, so the package's `tests/`
+> directory is not on CC's autoloader, and the harness needs
+> `orchestra/testbench`, which CC has no reason to install. The assertions now
+> ship in `src/`, so the artisan command above needs nothing installed, nothing
+> published, and works against a warm `config:cache`. It makes no network calls,
+> so it is safe on a production host and deterministic in a CI job with no
+> egress.
+
+It exits 0 or 1, prints `--json` for a pipeline to parse, and 42 checks have to
+pass. A `suite.integrity` check asserts the run was not shortened, so "make the
+gate green" cannot be done by deleting the thing that went red.
+
+Equivalent, from CC's own Pest suite — which is the better place for it, because
+it runs on every PR rather than only at deploy:
+
+```php
+use Wollerp\AuthClient\Conformance\ConformanceSuite;
+
+it('validates Wollerp tokens correctly', function () {
+    $report = app(ConformanceSuite::class)->run(strict: true);
+
+    expect($report->passed())->toBeTrue($report->failureSummary());
+});
+```
 
 | # | Check | Pass |
 |---|---|---|
-| 1 | `pest --testsuite=conformance` green inside CC's CI | 10/10 |
+| 1 | `php artisan wollerp:conformance --strict` green inside CC's CI | exit 0, 42/42 |
 | 2 | A valid `aud: ["cc"]` token opens a protected route | 200 |
 | 3 | A token with `aud: ["bc"]` on the same route | 401, not 200 |
 | 4 | An `alg: none` token, and an HS256 token signed with the JWKS public key | 401 both |
@@ -536,10 +631,11 @@ as a one-off.
 | 8 | **A rotated `kid` causes no 401s** — `auth:rotate-signing-key` on Auth, then hit CC immediately with a token signed by the new key | 200, no 401 spike |
 | 9 | JWKS unreachable (block egress) with a warm cache | 200s continue |
 | 10 | JWKS unreachable with a cold cache and no `bundled_keys` | **503**, not 401 |
+| 10b | JWKS unreachable with a cold cache **and** `WOLLERP_AUTH_BUNDLED_JWKS` set | **200s continue** |
 | 11 | `users_mirror` row count matches Auth's user count | equal |
 | 12 | A `created_by` column renders a name on a list endpoint | populated |
 | 13 | `Model::find()` on the mirror from tinker, then `->save()` | throws |
-| 14 | `php artisan config:cache && php artisan route:cache` then smoke the API | 200 |
+| 14 | `php artisan config:cache && php artisan route:cache`, then re-run check 1 and smoke the API | exit 0, 200 |
 
 Check 8 is the one people skip and the one that bites. Rotation is a *routine*
 operation — every 90 days — and if an unknown `kid` produces 401s instead of a
@@ -548,6 +644,17 @@ Watch CC's logs during the rotation, not just the response codes.
 
 Checks 9 and 10 distinguish `jwks_unavailable` from `jwks_unusable`. Both must
 be 503. A 401 there sends users back through login for a fault on our side.
+
+Check 10b is the one 10 exists to motivate. 10 documents what an empty bundle
+costs; 10b proves you have stopped paying it. Run them in that order on the same
+host so the difference is attributable to the bundle and nothing else, and
+re-run 10b after every signing-key rotation — see §3.
+
+Check 14 is not just a smoke test. `config:cache` is where a correct `.env`
+stops being the thing the application reads, and it is the single most common
+way a verified staging configuration turns into a broken production one.
+Re-running check 1 *after* caching is what catches it, because the conformance
+command reads the same cached config the request path does.
 
 ---
 

@@ -1,5 +1,4 @@
 /vendor/
-composer.lock
 /.phpunit.cache/
 /.phpunit.result.cache
 .phpunit.result.cache
@@ -9,3 +8,10 @@ composer.lock
 .vscode/
 .DS_Store
 Thumbs.db
+
+# composer.lock is deliberately NOT ignored. See the "composer.lock" section of
+# README.md — a library normally ignores it, and this one does not, because its
+# dev dependency tree executes arbitrary code that decides whether the estate's
+# authentication gate passes. The cost (CI proving one resolution instead of the
+# whole `^12.0|^13.0` range) is paid back by the matrix jobs in
+# .github/workflows/ci.yml, which ignore the lock on purpose.

@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Nothing about this package changes on a schedule, but its dependency tree
+  # does. A weekly floating run is how an upstream break or a yanked package
+  # gets found on a Monday instead of during a release.
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  # ── The reproducible run ───────────────────────────────────────────────────
+  #
+  # `--locked` installs exactly what composer.lock records, hashes included, and
+  # fails if the lock and composer.json have drifted. This is the job whose green
+  # tick means something specific: a given commit plus a given dependency tree.
+  locked:
+    name: Locked (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: json, openssl
+          coverage: none
+
+      - name: Validate composer.json against composer.lock
+        run: composer validate --strict
+
+      - name: Install the locked dependency tree
+        run: composer install --locked --no-interaction --no-progress --prefer-dist
+
+      - run: vendor/bin/pest --testsuite=conformance
+      - run: vendor/bin/pest
+
+  # ── The coverage runs ──────────────────────────────────────────────────────
+  #
+  # These deliberately IGNORE the lock. Committing a lock file narrows what CI
+  # proves from "any resolution the constraints allow" to "this one", which for
+  # a library declaring illuminate/* ^12.0|^13.0 is a real loss — the lock could
+  # sit on 13 for a year while every consumer runs 12. These jobs buy that
+  # coverage back, and they are the reason committing the lock is safe.
+  floating:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Lowest allowed (Laravel 12)
+            php: '8.3'
+            flags: '--prefer-lowest --prefer-stable'
+          - name: Highest allowed
+            php: '8.4'
+            flags: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: json, openssl
+          coverage: none
+
+      - name: Resolve dependencies afresh
+        run: composer update ${{ matrix.flags }} --no-interaction --no-progress --prefer-dist
+
+      - name: Record what actually got installed
+        run: composer show --direct
+
+      - run: vendor/bin/pest
+
+  # ── The gate a consumer will run ───────────────────────────────────────────
+  #
+  # Proves the shipped conformance suite is reachable and green through the
+  # PRODUCTION autoloader only — no autoload-dev, no test framework — which is
+  # exactly the situation inside a consumer. If this job passes and the package
+  # suite passes, `php artisan wollerp:conformance` works in a product.
+  shipped-suite:
+    name: Shipped suite (no dev autoload)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: json, openssl
+          coverage: none
+
+      - run: composer install --locked --no-interaction --no-progress --prefer-dist
+
+      - name: Rebuild the autoloader without autoload-dev
+        run: composer dump-autoload --no-dev --optimize
+
+      - name: The conformance classes must load and mint tokens with no dev deps
+        run: |
+          php -r '
+            require "vendor/autoload.php";
+
+            $forge = new Wollerp\AuthClient\Conformance\TokenForge("https://iss.test", "cc");
+            $token = $forge->sign($forge->payload());
+
+            if (substr_count($token, ".") !== 2) {
+              fwrite(STDERR, "TokenForge did not mint a compact JWS.\n");
+              exit(1);
+            }
+
+            $declared = array_column(Wollerp\AuthClient\Conformance\ConformanceSuite::CHECKS, "id");
+            $missing  = array_diff(Wollerp\AuthClient\Conformance\ConformanceSuite::BYPASS_GUARDS, $declared);
+
+            if ($missing !== []) {
+              fwrite(STDERR, "Bypass guards missing from the manifest: " . implode(", ", $missing) . "\n");
+              exit(1);
+            }
+
+            printf("%d checks reachable through the production autoloader.\n", count($declared));
+          '

@@ -18,6 +18,7 @@
         "illuminate/http": "^12.0|^13.0",
         "illuminate/database": "^12.0|^13.0",
         "illuminate/auth": "^12.0|^13.0",
+        "illuminate/cache": "^12.0|^13.0",
         "illuminate/console": "^12.0|^13.0",
         "illuminate/contracts": "^12.0|^13.0",
         "illuminate/routing": "^12.0|^13.0",
@@ -49,6 +50,10 @@
     "scripts": {
         "test": "pest",
         "test:conformance": "pest --testsuite=conformance"
+    },
+    "scripts-descriptions": {
+        "test": "Run the whole suite.",
+        "test:conformance": "Run the package's own conformance tests. Inside a CONSUMER, run `php artisan wollerp:conformance --strict` instead — a dependency's autoload-dev is never loaded, so these test files are not on a product's autoloader."
     },
     "config": {
         "sort-packages": true,
