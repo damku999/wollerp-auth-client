@@ -8,6 +8,7 @@ use Illuminate\Http\Client\Factory as HttpFactory;
 use Throwable;
 use Wollerp\AuthClient\Exceptions\JwksException;
 use Wollerp\AuthClient\Support\Base64Url;
+use Wollerp\AuthClient\Support\CaBundle;
 
 /**
  * CONTRACT §3. Resolves a token's `kid` to a PEM public key.
@@ -32,6 +33,8 @@ final class JwksClient
 
     /**
      * @param  array<int, array<string, mixed>>  $bundledKeys  Raw JWKs shipped with the deploy.
+     * @param  string  $caBundle  Optional CA to verify the JWKS host against. Naming one
+     *                            is the only TLS lever there is — see Support\CaBundle.
      */
     public function __construct(
         private readonly HttpFactory $http,
@@ -39,6 +42,7 @@ final class JwksClient
         private readonly string $url,
         private readonly array $bundledKeys = [],
         private readonly int $timeout = 5,
+        private readonly string $caBundle = '',
     ) {}
 
     /**
@@ -107,6 +111,7 @@ final class JwksClient
             $response = $this->http
                 ->timeout($this->timeout)
                 ->acceptJson()
+                ->withOptions(CaBundle::options($this->caBundle))
                 ->get($this->url);
 
             if ($response->successful()) {

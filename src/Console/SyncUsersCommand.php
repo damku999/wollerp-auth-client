@@ -10,6 +10,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Wollerp\AuthClient\Hmac\Signer;
 use Wollerp\AuthClient\Mirror\MirrorSynchroniser;
+use Wollerp\AuthClient\Support\CaBundle;
 
 /**
  * CONTRACT §4 layer 3 — the backstop. Nightly reconcile plus the initial
@@ -52,6 +53,7 @@ final class SyncUsersCommand extends Command
         private readonly string $endpoint,
         private readonly int $perPage,
         private readonly int $timeout,
+        private readonly string $caBundle = '',
     ) {
         parent::__construct();
     }
@@ -115,6 +117,7 @@ final class SyncUsersCommand extends Command
                 $response = $this->http
                     ->timeout($this->timeout)
                     ->acceptJson()
+                    ->withOptions(CaBundle::options($this->caBundle))
                     ->withHeaders($this->signer->headers(''))
                     ->get($url, $query);
             } catch (Throwable $exception) {

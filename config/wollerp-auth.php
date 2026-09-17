@@ -54,6 +54,30 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Certificate authority for outbound hops
+    |--------------------------------------------------------------------------
+    |
+    | Path to a CA certificate to verify the auth server against — a private CA,
+    | or the self-signed certificate a local `.test` vhost presents. Leave it
+    | unset to verify against the system trust store, which is what production
+    | should do.
+    |
+    | This is the ONLY TLS lever, deliberately. There is no way to switch
+    | verification off: such a switch is set once in development and then found,
+    | years later, still set in production — and a service plane that does not
+    | verify its peer can be answered by anyone on the path.
+    |
+    | It applies to EVERY outbound hop — the JWKS fetch and `users:sync`. It
+    | previously existed only in Coms Coupler, applied only to that product's own
+    | outbound POSTs, so `users:sync` ignored it entirely and failed with cURL
+    | error 60 against a certificate the product had already been told to trust.
+    |
+    */
+
+    'ca_bundle' => env('WOLLERP_AUTH_CA_BUNDLE', ''),
+
+    /*
+    |--------------------------------------------------------------------------
     | Token validation
     |--------------------------------------------------------------------------
     |

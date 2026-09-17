@@ -135,6 +135,7 @@ final class WollerpAuthServiceProvider extends ServiceProvider
                 (string) $this->config('jwks.url', ''),
                 is_array($bundled) ? $bundled : [],
                 (int) $this->config('jwks.http_timeout', 5),
+                (string) $this->config('ca_bundle', ''),
             );
         });
     }
@@ -268,6 +269,7 @@ final class WollerpAuthServiceProvider extends ServiceProvider
                 (string) $this->config('sync.endpoint', '/api/v1/internal/users'),
                 (int) $this->config('sync.per_page', 500),
                 (int) $this->config('sync.timeout', 30),
+                (string) $this->config('ca_bundle', ''),
             );
         });
 
