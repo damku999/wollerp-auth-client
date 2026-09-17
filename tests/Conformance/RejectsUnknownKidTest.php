@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Http;
+use Wollerp\AuthClient\Conformance\TokenForge;
 use Wollerp\AuthClient\Jwks\JwksClient;
 use Wollerp\AuthClient\Support\Base64Url;
 use Wollerp\AuthClient\Tests\Support\TokenFactory;
@@ -143,7 +144,17 @@ it('reports a JWKS document with no usable key as unusable, not unreachable', fu
 });
 
 it('drops an undersized RSA key without dropping the good one beside it', function (): void {
-    $weak = openssl_pkey_new(['private_key_bits' => 1024, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    // Through the forge's helper, not a bare openssl_pkey_new(): on a host with
+    // no OpenSSL config this returns false and the TypeError from passing it to
+    // openssl_pkey_get_details() reads as a broken test rather than a missing
+    // config file.
+    $weak = openssl_pkey_new(TokenForge::withOpenSslConfig([
+        'private_key_bits' => 1024,
+        'private_key_type' => OPENSSL_KEYTYPE_RSA,
+    ]));
+
+    expect($weak)->not->toBeFalse('could not generate the undersized key this test needs');
+
     $details = openssl_pkey_get_details($weak);
 
     $this->publishJwks(

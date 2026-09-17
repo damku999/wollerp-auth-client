@@ -115,7 +115,31 @@ class TokenForge
     }
 
     /**
-     * The `extras/ssl/openssl.cnf` shipped next to the running PHP binary.
+     * Key-generation options with a `config` entry added where this machine
+     * needs one — for anything else that has to mint a key.
+     *
+     * Public because the fallback turned out to be needed in four places, and
+     * the fourth was a test calling `openssl_pkey_new()` directly and failing
+     * for the same reason as the other three. A fifth copy of the same eight
+     * lines would be the actual bug.
+     *
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>
+     */
+    public static function withOpenSslConfig(array $options): array
+    {
+        $config = self::locateOpenSslConfig();
+
+        return $config === null ? $options : $options + ['config' => $config];
+    }
+
+    /**
+     * The `extras/ssl/openssl.cnf` shipped next to the running PHP binary, or
+     * null when the environment needs no help.
+     *
+     * Returns null when OPENSSL_CONF is already set, so an operator who has
+     * configured their host stays in charge of which file is used; this only
+     * supplies a default where there is none.
      *
      * PHP_BINARY is the interpreter actually executing, which is the one whose
      * OpenSSL build matters — resolving it this way survives a machine with
@@ -123,7 +147,7 @@ class TokenForge
      */
     private static function locateOpenSslConfig(): ?string
     {
-        if (PHP_BINARY === '') {
+        if (PHP_BINARY === '' || getenv('OPENSSL_CONF') !== false) {
             return null;
         }
 
