@@ -37,16 +37,14 @@ class TokenForge
         public readonly string $audience,
         public readonly string $kid = 'wollerp-conformance-ephemeral',
     ) {
-        $key = openssl_pkey_new([
-            'private_key_bits' => 2048,
-            'private_key_type' => OPENSSL_KEYTYPE_RSA,
-        ]);
+        $key = self::generateKey();
 
         if ($key === false) {
             throw new RuntimeException(
                 'openssl_pkey_new() failed: '.(openssl_error_string() ?: 'unknown error').'. '
-                .'On Windows this usually means OPENSSL_CONF is not set for the CLI php.ini; '
-                .'point it at your PHP build\'s extras/ssl/openssl.cnf.'
+                .'This is an environment fault, not a conformance failure: the suite could not '
+                .'mint its own throwaway keypair, so it never got as far as testing anything. '
+                .'Point OPENSSL_CONF at your PHP build\'s extras/ssl/openssl.cnf.'
             );
         }
 
@@ -60,6 +58,81 @@ class TokenForge
         $this->publicKeyPem = (string) $details['key'];
         $this->modulus = (string) $details['rsa']['n'];
         $this->exponent = (string) $details['rsa']['e'];
+    }
+
+    /**
+     * Mint the ephemeral keypair, finding openssl.cnf ourselves if the
+     * environment has not been told where it is.
+     *
+     * On a stock Windows PHP build OPENSSL_CONF is unset, `openssl_pkey_new()`
+     * returns false, and every check in the suite that needs a token fails —
+     * thirty of them. The output then reads as thirty broken security pins and
+     * "this product must not go to production", when the truth is that one
+     * environment variable is missing and nothing was tested at all. That is
+     * the worst possible failure mode for a tool whose entire job is to report
+     * honestly on security posture: it cries wolf loudly enough that the next
+     * real red run looks like the same old noise.
+     *
+     * Requiring every developer to export the variable is not a fix; it leaves
+     * the suite green only on machines whose shell profile happens to be right,
+     * which is how the 41-pass readings in STATUS came to be recorded from a
+     * repo that fails on a clean checkout.
+     *
+     * So: try normally, and only if that fails look for the config file that
+     * ships alongside the running PHP binary and retry pointing at it
+     * explicitly. On Linux and macOS the first call succeeds and none of this
+     * executes. If there is no such file, the caller still gets the explicit
+     * error above rather than a silent miscount.
+     *
+     * @return OpenSSLAsymmetricKey|false
+     */
+    private static function generateKey()
+    {
+        $options = [
+            'private_key_bits' => 2048,
+            'private_key_type' => OPENSSL_KEYTYPE_RSA,
+        ];
+
+        $key = openssl_pkey_new($options);
+
+        if ($key !== false) {
+            return $key;
+        }
+
+        $config = self::locateOpenSslConfig();
+
+        if ($config === null) {
+            return false;
+        }
+
+        // Drain the error queue first, or the retry's diagnostics are polluted
+        // by the failure we are deliberately recovering from.
+        while (openssl_error_string() !== false) {
+            // Discarded by design.
+        }
+
+        return openssl_pkey_new($options + ['config' => $config]);
+    }
+
+    /**
+     * The `extras/ssl/openssl.cnf` shipped next to the running PHP binary.
+     *
+     * PHP_BINARY is the interpreter actually executing, which is the one whose
+     * OpenSSL build matters — resolving it this way survives a machine with
+     * nine PHP versions installed and picks the right one without configuration.
+     */
+    private static function locateOpenSslConfig(): ?string
+    {
+        if (PHP_BINARY === '') {
+            return null;
+        }
+
+        $candidate = dirname(PHP_BINARY).DIRECTORY_SEPARATOR
+            .'extras'.DIRECTORY_SEPARATOR
+            .'ssl'.DIRECTORY_SEPARATOR
+            .'openssl.cnf';
+
+        return is_readable($candidate) ? $candidate : null;
     }
 
     /**
