@@ -16,9 +16,19 @@ permissions:
 jobs:
   # ── The reproducible run ───────────────────────────────────────────────────
   #
-  # `--locked` installs exactly what composer.lock records, hashes included, and
-  # fails if the lock and composer.json have drifted. This is the job whose green
-  # tick means something specific: a given commit plus a given dependency tree.
+  # This is the job whose green tick means something specific: a given commit
+  # plus a given dependency tree.
+  #
+  # It used to run `composer install --locked`. That option does not exist on
+  # `install` and never has, so this job failed with `The "--locked" option does
+  # not exist` on every run it ever made — the tick it was meant to produce was
+  # never available to mean anything.
+  #
+  # `install` already provides the first half: unlike `update` it installs
+  # precisely what composer.lock records and never re-resolves. The second half,
+  # which no flag on `install` could have given, is proving the lock still
+  # agrees with composer.json — that is `composer validate --check-lock`, now
+  # run explicitly before the install rather than assumed.
   locked:
     name: Locked (PHP ${{ matrix.php }})
     runs-on: ubuntu-latest
@@ -38,8 +48,11 @@ jobs:
       - name: Validate composer.json against composer.lock
         run: composer validate --strict
 
+      - name: Verify composer.lock still matches composer.json
+        run: composer validate --check-lock --no-check-publish
+
       - name: Install the locked dependency tree
-        run: composer install --locked --no-interaction --no-progress --prefer-dist
+        run: composer install --no-interaction --no-progress --prefer-dist
 
       - run: vendor/bin/pest --testsuite=conformance
       - run: vendor/bin/pest
@@ -99,7 +112,10 @@ jobs:
           extensions: json, openssl
           coverage: none
 
-      - run: composer install --locked --no-interaction --no-progress --prefer-dist
+      - name: Verify composer.lock still matches composer.json
+        run: composer validate --check-lock --no-check-publish
+
+      - run: composer install --no-interaction --no-progress --prefer-dist
 
       - name: Rebuild the autoloader without autoload-dev
         run: composer dump-autoload --no-dev --optimize
