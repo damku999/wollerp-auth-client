@@ -4,7 +4,7 @@ Validates RS256 access tokens issued by `wollerp-auth`. Every product backend in
 this package. **It never issues a token and holds no signing key** — it only ever holds
 public keys fetched from JWKS.
 
-Implements LAYER 1 and LAYER 2 of [`CONTRACT.md`](../../CONTRACT.md) §2. LAYER 3
+Implements LAYER 1 and LAYER 2 of [`CONTRACT.md`](../../docs/CONTRACT.md) §2. LAYER 3
 (profile context, subscription, permission) is product-owned and deliberately absent.
 
 Requires PHP 8.3+ and Laravel 12 or 13. Auth runs 13; Coms Coupler stays on 12 until
