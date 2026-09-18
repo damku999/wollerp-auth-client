@@ -92,7 +92,7 @@ final class MirrorSynchroniser
      * @param  array<string, mixed>  $record
      * @return bool whether a write happened
      */
-    public function syncFromRecord(array $record): bool
+    public function syncFromRecord(array $record, bool $force = false): bool
     {
         $id = (int) ($record['auth_user_id'] ?? $record['id'] ?? 0);
 
@@ -103,9 +103,19 @@ final class MirrorSynchroniser
         $version = (int) ($record['version'] ?? $record['ver'] ?? 0);
         $existing = $this->find($id);
 
-        if ($existing !== null && (int) $existing->getAttribute('version') > $version) {
+        if (! $force && $existing !== null && (int) $existing->getAttribute('version') > $version) {
             // An older snapshot than what we already hold. A slow page of a
             // backfill must never roll the mirror backwards.
+            //
+            // $force exists because that guard is also a trap: a row carrying a
+            // version HIGHER than anything the auth server will ever issue can
+            // never be repaired by any sync, and the corruption is permanent and
+            // silent. A real one was found holding version 50 against auth's 2,
+            // with a truncated uuid ('01X') and a null status — a full backfill
+            // read it, skipped it, and reported success. Reconciliation against
+            // a definitive source has to have a way to say "that local row is
+            // wrong", so `users:sync --force` says it. Opt-in, because the
+            // default must stay the safe one.
             return false;
         }
 

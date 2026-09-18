@@ -41,7 +41,8 @@ final class SyncUsersCommand extends Command
         {--since= : Only users changed at or after this time (any strtotime-parsable value). Omit for a full backfill.}
         {--per-page= : Page size requested from the auth server.}
         {--max-pages=10000 : Safety stop, in case the server never stops handing out cursors.}
-        {--dry-run : Fetch and report without writing to the mirror.}';
+        {--dry-run : Fetch and report without writing to the mirror.}
+        {--force : Overwrite mirror rows whose version is ahead of the one the server reports. For repairing a corrupt row, where the auth server is the source of truth.}';
 
     protected $description = 'Reconcile users_mirror against the Wollerp auth server.';
 
@@ -60,6 +61,7 @@ final class SyncUsersCommand extends Command
 
     public function handle(): int
     {
+        $force = (bool) $this->option('force');
         $since = $this->resolveSince();
 
         if ($since === false) {
@@ -157,7 +159,7 @@ final class SyncUsersCommand extends Command
 
                 $seen++;
 
-                if (! $dryRun && $this->mirror->syncFromRecord($record)) {
+                if (! $dryRun && $this->mirror->syncFromRecord($record, $force)) {
                     $written++;
                 }
             }
