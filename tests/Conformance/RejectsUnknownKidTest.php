@@ -95,6 +95,60 @@ it('falls back to the bundled key when the endpoint is unreachable on a cold cac
     expect($claims->uid())->toBe(TokenFactory::UID);
 });
 
+/*
+ * A failed refetch is not knowledge. Found live on Coms Coupler, 19 Sep 2026:
+ * key rotated, JWKS down, cache cold, bundle carrying only the old kid — every
+ * token signed by the new key answered 401 `token_signing_key_unknown`, and
+ * the holder was sent back through login for an outage on our side. The kid
+ * was never checked against the auth server; the client had simply run out of
+ * places to look. That is the fetch's 503, not the token's 401.
+ */
+it('reports 503 when the endpoint is down, the cache is cold and the bundle lacks the kid', function (): void {
+    config()->set('wollerp-auth.jwks.bundled_keys', [$this->tokens->jwk()]);
+    $this->app->forgetInstance(JwksClient::class);
+    $this->app->forgetInstance(TokenValidator::class);
+    $this->breakJwksEndpoint();
+
+    $rotated = new TokenFactory('2026-12');
+    $exception = rejects(fn () => $this->validator()->validate($rotated->sign($rotated->payload())));
+
+    expect($exception->reason())->toBe('jwks_unavailable')
+        ->and($exception->status())->toBe(503);
+
+    // The bundled kid still validates from the same cold, broken state.
+    expect($this->validator()->validate($this->tokens->sign($this->tokens->payload()))->uid())
+        ->toBe(TokenFactory::UID);
+});
+
+it('reports 503 when the forced refetch for an unknown kid fails against a warm cache', function (): void {
+    // Warm with the old key, then the endpoint dies and a rotated key arrives.
+    $this->validator()->validate($this->tokens->sign($this->tokens->payload()));
+    $this->breakJwksEndpoint();
+
+    $rotated = new TokenFactory('2026-12');
+    $exception = rejects(fn () => $this->validator()->validate($rotated->sign($rotated->payload())));
+
+    expect($exception->reason())->toBe('jwks_unavailable')
+        ->and($exception->status())->toBe(503);
+});
+
+it('still answers 401 for an unknown kid when the refetch is throttled, because nothing failed', function (): void {
+    $impostor = new TokenFactory('never-published');
+    $token = $impostor->sign($impostor->payload());
+
+    // Warm, then spend the refetch slot on a LIVE answer that lacks the kid.
+    $this->validator()->validate($this->tokens->sign($this->tokens->payload()));
+    rejects(fn () => $this->validator()->validate($token));
+
+    // Now the endpoint dies. Inside the cooldown no fetch runs, so there is no
+    // failure to report — the kid is absent from a fresh document, full stop.
+    $this->breakJwksEndpoint();
+    $exception = rejects(fn () => $this->validator()->validate($token));
+
+    expect($exception->reason())->toBe('token_signing_key_unknown')
+        ->and($exception->status())->toBe(401);
+});
+
 it('reports a JWKS outage as 503, not as a bad token', function (): void {
     $this->breakJwksEndpoint();
 

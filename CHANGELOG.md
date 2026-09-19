@@ -13,6 +13,38 @@ request across the whole estate; a floating constraint means an unrelated
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed refetch is no longer reported as an unknown key.** `JwksClient`
+  served last-known-good or bundled material when the endpoint was down and,
+  if the token's `kid` was in none of it, threw `unknownKey` — a 401 — although
+  the auth server had never been asked about that kid. Measured live on Coms
+  Couplers (19 Sep 2026): key rotated, JWKS down, cache cold, bundle stale →
+  every fresh token answered `token_signing_key_unknown` and its holder was sent
+  back through login for an outage on our side. The client now remembers why
+  the last fetch fell back and, when the kid is absent after such a fetch,
+  throws that fetch's `jwks_unavailable` / `jwks_unusable` (503) instead. The
+  throttled path is unchanged on purpose: a warm cache, no refetch slot and an
+  absent kid is still a 401 — nothing failed, the kid is not in a fresh document.
+- **`Http\Middleware\Authenticate`'s docblock said it "converts any failure
+  into a 401".** It never did — `deny()` maps the exception's own status, 503
+  with `Retry-After` included. The docblock now says what the code does, and
+  why that is the reason to prefer the alias over `auth:wollerp`.
+
+### Changed
+
+- `INTEGRATION-coms-coupler.md` records what Coms Couplers actually shipped for
+  route protection after §8 check 10 answered 401 with the render hook in
+  place: a product-owned middleware calling `authenticateRequest()` directly.
+  The "render hook makes `auth:wollerp` safe" claim is withdrawn — the hook is
+  never reached.
+- The conformance harness's validator now reads a **faked live** JWKS document
+  carrying the forge's key instead of the offline 503, because an unpublished
+  kid can only be judged "unknown" against a document the client believes it
+  received. Still no network: the factory is faked and stray requests throw.
+  `pin.signature.unknown_kid` keeps its meaning; the bundled-key path is still
+  exercised by `wiring.jwks.bundled_keys_usable`.
+
 Portability work. Brick Case was the control experiment for "what does a second
 product actually cost", and everything below is something it paid for by hand
 that the third product would otherwise pay again. Nothing here changes how a

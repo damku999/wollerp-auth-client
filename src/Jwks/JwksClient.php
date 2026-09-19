@@ -21,6 +21,10 @@ use Wollerp\AuthClient\Support\CaBundle;
  *
  *   live endpoint → last known good → bundled fallback → 503
  *
+ * with one rule joining the two: the 401 at the end of the first line is only
+ * given when the last fetch in that lookup was LIVE. If it fell back, the kid
+ * was never checked against the auth server and the answer is the fetch's 503.
+ *
  * The JWK → PEM conversion is done here, once, at cache-write time. Only RSA
  * keys declaring RS256 (or declaring nothing) are accepted; an EC or oct entry
  * appearing in the document is dropped rather than stored, because an `oct`
@@ -46,6 +50,14 @@ final class JwksClient
     ) {}
 
     /**
+     * Why the most recent fetch() handed back fallback material instead of a
+     * live document, or null when it was live. Read by publicKeyFor() so that
+     * "the kid is in nothing we hold" is only ever called an unknown key when
+     * we actually asked the auth server and it answered.
+     */
+    private ?JwksException $lastFetchFallback = null;
+
+    /**
      * @return string PEM-encoded RSA public key
      *
      * @throws JwksException
@@ -54,10 +66,12 @@ final class JwksClient
     {
         $keys = $this->cache->keys();
         $alreadyFresh = false;
+        $fetched = false;
 
         if ($keys === null) {
             $keys = $this->fetch();
             $alreadyFresh = true;
+            $fetched = true;
         }
 
         if (isset($keys[$kid])) {
@@ -70,6 +84,7 @@ final class JwksClient
         // cache would mean two identical round trips per unknown kid.
         if (! $alreadyFresh && $this->cache->claimRefetchSlot()) {
             $keys = $this->fetch();
+            $fetched = true;
 
             if (isset($keys[$kid])) {
                 return $keys[$kid];
@@ -80,6 +95,21 @@ final class JwksClient
 
         if (isset($bundled[$kid])) {
             return $bundled[$kid];
+        }
+
+        // Unknown, or unknowable? If a fetch ran during THIS lookup and came
+        // back with fallback material rather than a live document, the auth
+        // server never told us anything about this kid. Calling that "unknown
+        // key" is a 401, and a 401 sends the holder of a perfectly good token
+        // — signed by a key rotated in while the JWKS was down — back through
+        // login for a fault on our side. That is our fault, so it is a 503.
+        //
+        // The throttled case is different on purpose: a warm cache, no refetch
+        // slot, kid absent. Nothing failed; the key is simply not published in
+        // anything fresh, and it stays a 401. Measured live on Coms Coupler,
+        // 19 Sep 2026: rotation, JWKS down, cache cold, bundle stale → 401.
+        if ($fetched && $this->lastFetchFallback !== null) {
+            throw $this->lastFetchFallback;
         }
 
         throw JwksException::unknownKey($kid);
@@ -106,6 +136,7 @@ final class JwksClient
     {
         $failure = null;
         $unusable = false;
+        $this->lastFetchFallback = null;
 
         try {
             $response = $this->http
@@ -139,7 +170,13 @@ final class JwksClient
         }
 
         // The endpoint is down, slow, or publishing something unusable. Do not
-        // turn that into an estate-wide 401 storm.
+        // turn that into an estate-wide 401 storm: serve what we hold, and
+        // remember WHY it is fallback material so a kid that is in none of it
+        // is reported as the outage it is, not as a forged token.
+        $this->lastFetchFallback = $unusable
+            ? JwksException::unusable($this->url)
+            : JwksException::unreachable($this->url, $failure);
+
         $lastKnownGood = $this->cache->lastKnownGood();
 
         if ($lastKnownGood !== null) {
@@ -152,9 +189,7 @@ final class JwksClient
             return $bundled;
         }
 
-        throw $unusable
-            ? JwksException::unusable($this->url)
-            : JwksException::unreachable($this->url, $failure);
+        throw $this->lastFetchFallback;
     }
 
     /**

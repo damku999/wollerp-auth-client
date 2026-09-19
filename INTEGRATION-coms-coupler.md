@@ -310,7 +310,23 @@ Two things to verify while you are here:
 
 ### `auth:wollerp` here comes with a bill, and CC has to pay it
 
-**`auth:wollerp` is the right choice for CC and the wrong default for a new
+> **Superseded 19 Sep 2026.** CC ran §8 check 10 for the first time and got the
+> 401 this section predicts, with the render hook below already in place — the
+> hook never ran because Laravel's `Authenticate` never let the exception reach
+> it. CC now mounts the guard through its own `wollerp.authenticate` alias
+> (`App\Http\Middleware\AuthenticateWollerp`): it calls
+> `TokenGuard::authenticateRequest()` directly, lets anything that is not a 401
+> escape to `JsonExceptionHandler` (503 + `Retry-After` + CC's envelope), and
+> re-raises the 401s as `AuthenticationException` so the wire body stays the
+> `AUTH_TOKEN_001` the mobile client keys its sign-out on. It is prepended to
+> the priority list at the `AuthenticatesRequests` slot so it stays hoisted
+> where `auth:wollerp` was. `wollerp_api_guard()` returns the alias;
+> `tests/Feature/JwksOutageIs503Test.php` drives a real route. That is the
+> third option — keep your envelope AND get the 503 — and it is the one to
+> copy if `wollerp.auth`'s body is not acceptable. The rest of this section is
+> kept as the reasoning that led there.
+
+**`auth:wollerp` was the choice for CC and the wrong default for a new
 product.** The difference is that CC already has a custom exception handler and
 seven route groups mid-migration; a greenfield product has neither. See
 [`INTEGRATION.md`](INTEGRATION.md) → *Protecting routes* for the general case.
@@ -708,10 +724,17 @@ Watch CC's logs during the rotation, not just the response codes.
 Checks 9 and 10 distinguish `jwks_unavailable` from `jwks_unusable`. Both must
 be 503. A 401 there sends users back through login for a fault on our side.
 
-**Neither can pass on a route using `auth:wollerp` until the `WollerpAuthException`
-render hook from step 4 is in place.** Laravel's `Authenticate` sees only
-`check() === false` and answers 401, whatever the underlying reason was. If
-check 10 comes back 401, the route swap is not the bug — the missing handler is.
+**Neither can pass on a route using `auth:wollerp` at all** — not even with the
+`WollerpAuthException` render hook from step 4 in place. Laravel's `Authenticate`
+sees only `check() === false` and answers 401 before the exception can reach any
+handler; measured on CC 19 Sep 2026. If check 10 comes back 401, the route swap
+is not the bug — the middleware is. Use `wollerp.auth`, or a product-owned
+middleware that calls `authenticateRequest()` itself (CC's `wollerp.authenticate`).
+
+Since 0.2.2 the package also stops calling a failed refetch "unknown key": JWKS
+down, cache cold and a kid the bundle lacks is `jwks_unavailable` (503), not
+`token_signing_key_unknown` (401). Before that, the bundle-is-stale-after-rotation
+state that 10b's re-run guards against answered 401 even with the right middleware.
 
 Check 10b is the one 10 exists to motivate. 10 documents what an empty bundle
 costs; 10b proves you have stopped paying it. Run them in that order on the same

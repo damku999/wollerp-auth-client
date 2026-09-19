@@ -18,7 +18,11 @@ use Wollerp\AuthClient\Token\Claims;
  * Alias: `wollerp.auth`.
  *
  * Runs CONTRACT §2 layers 1 and 2 and then the §4 mirror upsert, by driving the
- * `wollerp` guard, and converts any failure into a 401.
+ * `wollerp` guard, and answers each failure with the status the exception
+ * carries: 401 with an RFC 6750 challenge for a bad token, **503 with
+ * `Retry-After`** for `jwks_unavailable` / `jwks_unusable`. That split is the
+ * reason to prefer this alias over `auth:wollerp` — Laravel's own Authenticate
+ * sees only `check() === false` and answers 401 for an outage on our side.
  *
  * LAYER 3 — profile context, subscription, permission — is explicitly NOT here.
  * That is product-owned and resolved from the product's own database on every

@@ -1476,12 +1476,17 @@ final class ConformanceSuite
         }
 
         $jwks = new JwksClient(
-            $this->offlineHttp(),
+            // A faked LIVE document, not the offline 503: since 0.2.2 a kid
+            // that is absent after a fetch that fell back is reported as the
+            // fetch's outage (503), so an "unknown kid" can only be asserted
+            // against a document the client believes it actually received.
+            // Still no network — the factory is faked and stray requests throw.
+            $this->publishedJwksHttp(),
             $this->isolatedJwksCache(),
             'https://wollerp-conformance.invalid/.well-known/jwks.json',
-            // Handed in as the bundled set so the real JWK → PEM conversion,
+            // Also handed in as the bundled set so the real JWK → PEM conversion,
             // the RS256 filter and the 2048-bit floor are all exercised in the
-            // consumer's own OpenSSL build.
+            // consumer's own OpenSSL build on both paths.
             [$this->forge()->jwk()],
         );
 
@@ -1517,6 +1522,23 @@ final class ConformanceSuite
             'wollerp:conformance makes no network calls',
             503,
         ));
+
+        return $http;
+    }
+
+    /**
+     * An HTTP factory that "publishes" the forge's public key as a JWKS
+     * document, without a network. The pin checks need the client to have
+     * SEEN a live document so that an unpublished kid is judged against it —
+     * a fetch that fell back cannot judge anything and reports the outage.
+     */
+    private function publishedJwksHttp(): HttpFactory
+    {
+        $http = new HttpFactory;
+        $document = ['keys' => [$this->forge()->jwk()]];
+
+        $http->preventStrayRequests();
+        $http->fake(static fn (): mixed => HttpFactory::response($document, 200));
 
         return $http;
     }
