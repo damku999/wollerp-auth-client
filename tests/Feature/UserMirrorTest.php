@@ -32,7 +32,7 @@ it('has no password column, and never will', function (): void {
 it('has every column the contract specifies', function (string $column): void {
     expect(Schema::hasColumn('users_mirror', $column))->toBeTrue();
 })->with([
-    'auth_user_id', 'auth_user_uuid', 'name', 'email',
+    'auth_user_id', 'auth_user_uuid', 'name', 'email', 'handle',
     'status', 'email_verified_at', 'version', 'synced_at',
 ]);
 
@@ -46,6 +46,18 @@ it('creates the mirror row from the token on first sight of a user', function ()
         ->and($row->email)->toBe('user@example.com')
         ->and($row->name)->toBe('Jane Smith')
         ->and((int) $row->version)->toBe(7);
+});
+
+it('copies the handle claim into the mirror, so a sign-up handle is there on the first request', function (): void {
+    authenticateWith(['handle' => 'jane.smith']);
+
+    expect(DB::table('users_mirror')->where('auth_user_id', TokenFactory::UID)->value('handle'))->toBe('jane.smith');
+});
+
+it('leaves the handle null for a token from a server that does not send the claim yet', function (): void {
+    authenticateWith();
+
+    expect(DB::table('users_mirror')->where('auth_user_id', TokenFactory::UID)->value('handle'))->toBeNull();
 });
 
 it('does not write when ver has not drifted', function (): void {

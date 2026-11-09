@@ -31,6 +31,9 @@ final class MirrorSynchroniser
 {
     private static int $depth = 0;
 
+    /** Memo for hasHandleColumn(); null until first asked. */
+    private ?bool $handleColumn = null;
+
     /**
      * @param  Closure(): int|null  $clock
      */
@@ -71,6 +74,12 @@ final class MirrorSynchroniser
             'email_verified_at' => $this->resolveVerifiedAt($claims, $existing),
             'synced_at' => $this->timestamp(),
         ];
+
+        // `handle` rides the token so a handle chosen at sign-up reaches the
+        // mirror on the first request, not at the next nightly reconcile.
+        if ($this->hasHandleColumn()) {
+            $attributes['handle'] = $claims->handle();
+        }
 
         // `status` is deliberately absent. The token does not carry it
         // (CONTRACT §1), so a token-driven upsert must not overwrite a status
@@ -129,12 +138,52 @@ final class MirrorSynchroniser
             'synced_at' => $this->timestamp(),
         ];
 
+        // CONTRACT §4/§5.4. Only when the record carries it AND this product's
+        // mirror has the column — a backend that has not run its handle
+        // migration yet must keep syncing everything else.
+        if (array_key_exists('handle', $record) && $this->hasHandleColumn()) {
+            $attributes['handle'] = $this->nullableString($record['handle']);
+        }
+
         $this->write(fn () => $this->model->newQuery()->updateOrCreate(
             ['auth_user_id' => $id],
             $attributes,
         ));
 
         return true;
+    }
+
+    /**
+     * Record the handle Auth has just confirmed for this person (a product's
+     * `handles/confirm` for kind=user), without waiting for the next sync.
+     *
+     * The token path cannot carry it — the token has no handle claim — and it
+     * advances `version` past the bump Auth made when it wrote users.handle, so
+     * without this the mirror would show no handle until the nightly reconcile.
+     * `version` is left alone: the next full record overwrites this with the
+     * same value.
+     *
+     * @return bool whether a row was written
+     */
+    public function syncHandle(int $authUserId, ?string $handle): bool
+    {
+        if (! $this->enabled || ! $this->hasHandleColumn() || ($existing = $this->find($authUserId)) === null) {
+            return false;
+        }
+
+        $this->write(fn () => $existing->forceFill([
+            'handle' => $handle,
+            'synced_at' => $this->timestamp(),
+        ])->save());
+
+        return true;
+    }
+
+    public function hasHandleColumn(): bool
+    {
+        return $this->handleColumn ??= $this->model->getConnection()
+            ->getSchemaBuilder()
+            ->hasColumn($this->model->getTable(), 'handle');
     }
 
     public function find(int $authUserId): ?Model

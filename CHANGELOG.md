@@ -11,7 +11,29 @@ CONTRACT §8 requires consumers to pin an **exact** version — `0.1.0`, never
 request across the whole estate; a floating constraint means an unrelated
 `composer update` can change that decision without review.
 
-## [Unreleased]
+## [0.3.0] - 2026-11-09
+
+### Added
+
+- **`handle` token claim.** `Claims::handle()`; a token-driven upsert copies it
+  into `users_mirror.handle` when the column exists, so a handle chosen at
+  sign-up is in the mirror on the first request, not at the next reconcile. A
+  token from a server that does not send the claim yet leaves it null.
+- **Handle registry client (CONTRACT §5.6).** `Handles\HandleRegistryClient`
+  — `check()` / `reserve()` / `confirm()` / `release()` against
+  `POST {base_url}/api/v1/internal/handles/*`, signed with the existing `Signer`
+  and `ca_bundle`, timeout `handles.timeout` (default 5 s, connect 3 s). Auth's
+  refusals arrive as `Exceptions\HandleRegistryException` with `reason()`
+  `taken` / `already_set` / `not_reserved` / `user_not_found` /
+  `account_required` and Auth's status; anything else (unreachable, 5xx,
+  unreadable body, no secret to sign with) is `unavailable` (503). Not a
+  `WollerpAuthException`, so it is never rendered as a token error.
+- **`users_mirror.handle`.** The stub gains a nullable indexed `handle
+  varchar(50)`. `MirrorSynchroniser::syncFromRecord()` copies `handle` when the
+  record carries it and the column exists — a product that has not migrated
+  keeps syncing everything else. `syncHandle()` records a handle the product
+  has just confirmed for a person (the token carries no handle claim, so the
+  token path cannot).
 
 ### Fixed
 

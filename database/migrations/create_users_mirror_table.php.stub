@@ -42,12 +42,14 @@ return new class extends Migration
             $table->char('auth_user_uuid', 26)->unique();         // token `sub`
             $table->string('name')->nullable();
             $table->string('email')->nullable();
+            $table->string('handle', 50)->nullable();             // CONTRACT §5.6, null until claimed
             $table->string('status', 32)->nullable();
             $table->timestamp('email_verified_at')->nullable();
             $table->unsignedInteger('version')->default(0);       // token `ver`
             $table->timestamp('synced_at')->nullable();
 
             $table->index('email');
+            $table->index('handle');
             $table->index('version');
         });
     }

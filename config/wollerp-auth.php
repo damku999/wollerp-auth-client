@@ -311,4 +311,21 @@ return [
         'timeout' => (int) env('WOLLERP_AUTH_SYNC_TIMEOUT', 30),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Handle registry
+    |--------------------------------------------------------------------------
+    |
+    | CONTRACT §5.6: product → auth, POST {endpoint}/{check,reserve,confirm,release}.
+    | Called inline while a user waits on a form, so the timeout is short; an
+    | unreachable Auth fails the handle write closed (HandleRegistryException
+    | reason `unavailable`).
+    |
+    */
+
+    'handles' => [
+        'endpoint' => env('WOLLERP_AUTH_HANDLES_ENDPOINT', '/api/v1/internal/handles'),
+        'timeout' => (int) env('WOLLERP_AUTH_HANDLES_TIMEOUT', 5),
+    ],
+
 ];

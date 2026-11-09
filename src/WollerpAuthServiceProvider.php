@@ -18,6 +18,7 @@ use Wollerp\AuthClient\Conformance\ConformanceSuite;
 use Wollerp\AuthClient\Console\ConformanceCommand;
 use Wollerp\AuthClient\Console\SyncUsersCommand;
 use Wollerp\AuthClient\Guard\TokenGuard;
+use Wollerp\AuthClient\Handles\HandleRegistryClient;
 use Wollerp\AuthClient\Hmac\Signer;
 use Wollerp\AuthClient\Hmac\Verifier;
 use Wollerp\AuthClient\Http\Middleware\Authenticate;
@@ -197,6 +198,19 @@ final class WollerpAuthServiceProvider extends ServiceProvider
             return new Signer(
                 (string) $this->config('hmac.project', ''),
                 (string) $this->config('hmac.outbound', ''),
+            );
+        });
+
+        // bind, not singleton: it picks up the CURRENT Signer, which tests
+        // rebuild after rewriting config.
+        $this->app->bind(HandleRegistryClient::class, function (Application $app): HandleRegistryClient {
+            return new HandleRegistryClient(
+                $app->make(HttpFactory::class),
+                $app->make(Signer::class),
+                (string) $this->config('base_url', ''),
+                (string) $this->config('handles.endpoint', '/api/v1/internal/handles'),
+                (int) $this->config('handles.timeout', 5),
+                (string) $this->config('ca_bundle', ''),
             );
         });
 

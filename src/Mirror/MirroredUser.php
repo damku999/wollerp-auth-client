@@ -24,6 +24,7 @@ use Wollerp\AuthClient\Exceptions\MirrorWriteForbiddenException;
  * @property string $auth_user_uuid
  * @property string|null $name
  * @property string|null $email
+ * @property string|null $handle
  * @property string|null $status
  * @property \Illuminate\Support\Carbon|null $email_verified_at
  * @property int $version

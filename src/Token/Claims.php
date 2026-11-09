@@ -114,6 +114,14 @@ final readonly class Claims implements JsonSerializable
         return is_numeric($authTime) ? (int) $authTime : null;
     }
 
+    /** The person's Wollerp handle (CONTRACT §5.6), or null when not set yet. */
+    public function handle(): ?string
+    {
+        $handle = $this->payload['handle'] ?? null;
+
+        return is_string($handle) && $handle !== '' ? $handle : null;
+    }
+
     public function emailVerified(): bool
     {
         return filter_var(
