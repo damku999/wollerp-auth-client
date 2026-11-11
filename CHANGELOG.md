@@ -11,7 +11,7 @@ CONTRACT §8 requires consumers to pin an **exact** version — `0.1.0`, never
 request across the whole estate; a floating constraint means an unrelated
 `composer update` can change that decision without review.
 
-## [Unreleased] - 0.4.0
+## [0.4.0] - 2026-11-11
 
 ### Added
 
