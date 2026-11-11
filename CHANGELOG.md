@@ -11,6 +11,28 @@ CONTRACT §8 requires consumers to pin an **exact** version — `0.1.0`, never
 request across the whole estate; a floating constraint means an unrelated
 `composer update` can change that decision without review.
 
+## [Unreleased] - 0.4.0
+
+### Added
+
+- **Service-plane signature v2** (CONTRACT §5). Signed string
+  `{timestamp}.{METHOD}.{request-target}.{raw_body}`, header
+  `X-Wollerp-Signature-Version: 2`. `Signer::signV2()`, `Signer::signRequest()`,
+  `Signer::canonicalV2()`. The service provider registers a global Laravel HTTP
+  client request middleware that re-signs, as v2, any outbound request carrying a
+  v1 signature this product's `Signer` produced — so `$signer->headers($rawBody)`
+  call sites need no change.
+- `Verifier::verify()` takes optional `$method`, `$target`, `$version`; the
+  middleware passes `getMethod()`, `getRequestUri()` and the version header.
+- `wollerp-auth.hmac.accept_v1` (env `WOLLERP_HMAC_ACCEPT_V1`, default `true`):
+  v1 signatures are accepted only while it is on. New refusal reason
+  `signature_version_refused`. **The next release defaults it to `false`.**
+
+### Fixed
+
+- `VerifyHmacSignature` imported no `Throwable`, so its `catch (Throwable)` never
+  matched and a cache outage threw instead of skipping the replay check.
+
 ## [0.3.0] - 2026-11-09
 
 ### Added

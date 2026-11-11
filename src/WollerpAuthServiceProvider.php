@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
+use Psr\Http\Message\RequestInterface;
 use Wollerp\AuthClient\Conformance\ConformanceSuite;
 use Wollerp\AuthClient\Console\ConformanceCommand;
 use Wollerp\AuthClient\Console\SyncUsersCommand;
@@ -220,6 +221,20 @@ final class WollerpAuthServiceProvider extends ServiceProvider
             return new Verifier(
                 is_array($secrets) ? array_map(strval(...), array_filter($secrets, is_string(...))) : [],
                 (int) $this->config('hmac.window', Verifier::DEFAULT_WINDOW),
+                null,
+                (bool) $this->config('hmac.accept_v1', true),
+            );
+        });
+
+        // CONTRACT §5 v2: every outbound Laravel HTTP call that carries this
+        // product's v1 service-plane headers leaves re-signed as v2 over its
+        // real method, request-target and body. Products build those headers
+        // with `$signer->headers($rawBody)` and never see the path; this is
+        // where the path enters the MAC. The Signer is resolved per request so
+        // a test that rebuilds it after rewriting config is honoured.
+        $this->callAfterResolving(HttpFactory::class, function (HttpFactory $http, Application $app): void {
+            $http->globalRequestMiddleware(
+                fn (RequestInterface $request): RequestInterface => $app->make(Signer::class)->signRequest($request)
             );
         });
     }

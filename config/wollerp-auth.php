@@ -282,11 +282,19 @@ return [
     | `project` is the same open-registry slug as `audience` above and carries
     | the same no-default rule, for the same reason.
     |
+    | `accept_v1`: senders always sign v2 (method + request-target bound into
+    | the MAC, `X-Wollerp-Signature-Version: 2`). A v1 signature (no version
+    | header, `{timestamp}.{raw_body}` only) is accepted inbound only while this
+    | is true. Default TRUE in 0.4.x so a rolling deploy where Auth still signs
+    | v1 keeps working; the next release flips the default to false. Set it to
+    | false yourself once Auth is on v2.
+    |
     */
 
     'hmac' => [
         'project' => env('WOLLERP_SERVICE_SLUG'),
         'window' => 300,
+        'accept_v1' => (bool) env('WOLLERP_HMAC_ACCEPT_V1', true),
         'secrets' => array_filter([
             'auth' => env('WOLLERP_HMAC_SECRET_AUTH'),
         ]),

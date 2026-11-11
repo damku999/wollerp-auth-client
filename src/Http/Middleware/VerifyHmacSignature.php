@@ -10,6 +10,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\IpUtils;
 use Symfony\Component\HttpFoundation\Response;
+use Throwable;
 use Wollerp\AuthClient\Exceptions\InvalidServiceSignatureException;
 use Wollerp\AuthClient\Hmac\Signer;
 use Wollerp\AuthClient\Hmac\Verifier;
@@ -52,6 +53,12 @@ final class VerifyHmacSignature
                 $request->header(Signer::TIMESTAMP_HEADER),
                 $request->header(Signer::SIGNATURE_HEADER),
                 $request->getContent(),
+                $request->getMethod(),
+                // The request-target as received (REQUEST_URI: path + raw
+                // query), not getPathInfo(), which drops a base path and would
+                // disagree with what the sender signed.
+                $request->getRequestUri(),
+                $request->header(Signer::VERSION_HEADER),
             );
 
             $this->assertNotReplayed((string) $request->header(Signer::SIGNATURE_HEADER));
@@ -75,11 +82,12 @@ final class VerifyHmacSignature
     }
 
     /**
-     * A valid signature is accepted ONCE. The signature covers only the
-     * timestamp and body, so inside the window a captured call could otherwise
-     * be replayed, or sent to a sibling endpoint taking the same body
-     * (handles/confirm vs handles/release). Senders sign every attempt afresh,
-     * so a legitimate retry never repeats a signature.
+     * A valid signature is accepted ONCE, v1 or v2. v2 already binds method and
+     * path, so this closes same-endpoint replay inside the window; for a v1
+     * signature (timestamp and body only) it also stops a captured call being
+     * re-aimed at a sibling endpoint taking the same body (handles/confirm vs
+     * handles/release). Senders sign every attempt afresh, so a legitimate
+     * retry never repeats a signature.
      *
      * A cache outage must not stop revocations reaching the product: the
      * replay check is skipped (and reported) rather than failing the call.

@@ -121,9 +121,14 @@ it('signs every page request per CONTRACT §5', function (): void {
         $timestamp = $request->header(Signer::TIMESTAMP_HEADER)[0] ?? '';
         $signature = $request->header(Signer::SIGNATURE_HEADER)[0] ?? '';
 
+        // v2: the exact request-target on the wire, query included.
+        $target = $request->toPsrRequest()->getRequestTarget();
+
         return $request->header(Signer::PROJECT_HEADER)[0] === 'cc'
+            && ($request->header(Signer::VERSION_HEADER)[0] ?? '') === Signer::VERSION_2
+            && str_starts_with($target, '/api/v1/internal/users?')
             && hash_equals(
-                'sha256='.hash_hmac('sha256', $timestamp.'.', 'outbound-test-secret'),
+                'sha256='.hash_hmac('sha256', $timestamp.'.GET.'.$target.'.', 'outbound-test-secret'),
                 $signature
             );
     });

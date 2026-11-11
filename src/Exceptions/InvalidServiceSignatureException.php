@@ -44,6 +44,14 @@ final class InvalidServiceSignatureException extends WollerpAuthException
         return new self('signature_mismatch', 'X-Wollerp-Signature does not match the raw body.');
     }
 
+    public static function versionRefused(string $version): self
+    {
+        return new self(
+            'signature_version_refused',
+            "X-Wollerp-Signature-Version \"{$version}\" is not accepted (v1 needs wollerp-auth.hmac.accept_v1)."
+        );
+    }
+
     public static function replayed(): self
     {
         return new self('signature_replayed', 'This signed request has already been accepted once.');

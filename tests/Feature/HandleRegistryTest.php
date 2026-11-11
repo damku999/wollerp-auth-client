@@ -45,13 +45,16 @@ it('posts a signed JSON body to handles/{operation} and returns Data', function 
 
     Http::assertSent(function (ClientRequest $request): bool {
         $headers = array_map(fn (array $v): string => $v[0], $request->headers());
-        $expected = app(Signer::class)->sign($request->body(), (int) $headers[Signer::TIMESTAMP_HEADER]);
+        // v2 on the wire (CONTRACT §5): the package's global HTTP client
+        // middleware re-signs over method and request-target.
+        $expected = app(Signer::class)->signV2('POST', '/api/v1/internal/handles/reserve', $request->body(), (int) $headers[Signer::TIMESTAMP_HEADER]);
 
         return $request->url() === TokenFactory::ISSUER.'/api/v1/internal/handles/reserve'
             && $request->method() === 'POST'
             // nulls are dropped, never sent
             && $request->body() === '{"handle":"acme","kind":"company"}'
             && $headers[Signer::PROJECT_HEADER] === 'cc'
+            && $headers[Signer::VERSION_HEADER] === Signer::VERSION_2
             && hash_equals($expected, $headers[Signer::SIGNATURE_HEADER]);
     });
 });
