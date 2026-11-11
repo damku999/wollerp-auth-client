@@ -168,6 +168,20 @@ it('passes a correctly signed request through the middleware', function (): void
         ->and($request->attributes->get(VerifyHmacSignature::PROJECT_ATTRIBUTE))->toBe('auth');
 });
 
+it('accepts a signed request once and refuses the same signature again', function (): void {
+    $middleware = new VerifyHmacSignature($this->verifier, [], new Illuminate\Cache\Repository(new Illuminate\Cache\ArrayStore));
+    $headers = $this->signer->headers($this->body);
+    $next = fn (): Response => new Response('ok');
+
+    $first = $middleware->handle(internalRequest($this->body, $headers), $next);
+    // Same bytes, same headers, other endpoint — a captured confirm replayed as a release.
+    $replay = $middleware->handle(internalRequest($this->body, $headers), $next);
+
+    expect($first->getStatusCode())->toBe(200)
+        ->and($replay->getStatusCode())->toBe(401)
+        ->and($replay->getContent())->toContain('signature_replayed');
+});
+
 it('returns 401 from the middleware for a bad signature', function (): void {
     $middleware = new VerifyHmacSignature($this->verifier);
 

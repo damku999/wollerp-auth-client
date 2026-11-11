@@ -44,6 +44,11 @@ final class InvalidServiceSignatureException extends WollerpAuthException
         return new self('signature_mismatch', 'X-Wollerp-Signature does not match the raw body.');
     }
 
+    public static function replayed(): self
+    {
+        return new self('signature_replayed', 'This signed request has already been accepted once.');
+    }
+
     public static function ipNotAllowed(): self
     {
         return new self('ip_not_allowed', 'Caller IP is not on the internal allowlist.');

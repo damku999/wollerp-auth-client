@@ -239,6 +239,8 @@ final class WollerpAuthServiceProvider extends ServiceProvider
             return new VerifyHmacSignature(
                 $app->make(Verifier::class),
                 is_array($allowed) ? array_values(array_map(strval(...), $allowed)) : [],
+                $app->make('cache')->store(),
+                (int) $this->config('hmac.window', Verifier::DEFAULT_WINDOW),
             );
         });
     }
